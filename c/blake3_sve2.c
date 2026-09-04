@@ -1,6 +1,7 @@
+// Port of blake3_neon.c: each xor+rotate pair becomes one SVE2 XAR.
 #include "blake3_impl.h"
 
-#include <arm_neon.h>
+#include <arm_sve.h>
 
 #ifdef __ARM_BIG_ENDIAN
 #error "This implementation only supports little-endian ARM."
@@ -8,75 +9,62 @@
 // and stores right, but step zero would be finding a way to test it in CI.
 #endif
 
-INLINE uint32x4_t loadu_128(const uint8_t src[16]) {
-  // vld1q_u32 has alignment requirements. Don't use it.
-  return vreinterpretq_u32_u8(vld1q_u8(src));
-}
-
-INLINE void storeu_128(uint32x4_t src, uint8_t dest[16]) {
-  // vst1q_u32 has alignment requirements. Don't use it.
-  vst1q_u8(dest, vreinterpretq_u8_u32(src));
-}
-
-INLINE uint32x4_t add_128(uint32x4_t a, uint32x4_t b) {
-  return vaddq_u32(a, b);
-}
-
-INLINE uint32x4_t xor_128(uint32x4_t a, uint32x4_t b) {
-  return veorq_u32(a, b);
-}
-
-INLINE uint32x4_t set1_128(uint32_t x) { return vld1q_dup_u32(&x); }
-
-INLINE uint32x4_t set4(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
-  uint32_t array[4] = {a, b, c, d};
-  return vld1q_u32(array);
-}
-
-INLINE uint32x4_t rot16_128(uint32x4_t x) {
-  // The straightforward implementation would be two shifts and an or, but that's
-  // slower on microarchitectures we've tested. See
-  // https://github.com/BLAKE3-team/BLAKE3/pull/319.
-  // return vorrq_u32(vshrq_n_u32(x, 16), vshlq_n_u32(x, 32 - 16));
-  return vreinterpretq_u32_u16(vrev32q_u16(vreinterpretq_u16_u32(x)));
-}
-
-INLINE uint32x4_t rot12_128(uint32x4_t x) {
-  // See comment in rot16_128.
-  // return vorrq_u32(vshrq_n_u32(x, 12), vshlq_n_u32(x, 32 - 12));
-  return vsriq_n_u32(vshlq_n_u32(x, 32-12), x, 12);
-}
-
-INLINE uint32x4_t rot8_128(uint32x4_t x) {
-  // See comment in rot16_128.
-  // return vorrq_u32(vshrq_n_u32(x, 8), vshlq_n_u32(x, 32 - 8));
-#if defined(__clang__)
-  return vreinterpretq_u32_u8(__builtin_shufflevector(vreinterpretq_u8_u32(x), vreinterpretq_u8_u32(x), 1,2,3,0,5,6,7,4,9,10,11,8,13,14,15,12));
-#elif __GNUC__ * 10000 + __GNUC_MINOR__ * 100 >=40700
-  static const uint8x16_t r8 = {1,2,3,0,5,6,7,4,9,10,11,8,13,14,15,12};
-  return vreinterpretq_u32_u8(__builtin_shuffle(vreinterpretq_u8_u32(x), vreinterpretq_u8_u32(x), r8));
-#else 
-  return vsriq_n_u32(vshlq_n_u32(x, 32-8), x, 8);
+#if __ARM_FEATURE_SVE_BITS != 128
+#error "blake3_sve2.c must be compiled with -msve-vector-bits=128"
 #endif
+
+// Fixed-length types, so they can be array elements. Not svuint32x4_t: in
+// ACLE that name is a tuple of four vectors.
+typedef svuint32_t svuint32_4_t __attribute__((arm_sve_vector_bits(128)));
+typedef svuint64_t svuint64_2_t __attribute__((arm_sve_vector_bits(128)));
+
+INLINE svuint32_4_t loadu_128(const uint8_t src[16]) {
+  // Load bytes; casting an unaligned uint8_t pointer to uint32_t is undefined.
+  return svreinterpret_u32_u8(svld1_u8(svptrue_b8(), src));
 }
 
-INLINE uint32x4_t rot7_128(uint32x4_t x) {
-  // See comment in rot16_128.
-  // return vorrq_u32(vshrq_n_u32(x, 7), vshlq_n_u32(x, 32 - 7));
-  return vsriq_n_u32(vshlq_n_u32(x, 32-7), x, 7);
+INLINE void storeu_128(svuint32_4_t src, uint8_t dest[16]) {
+  svst1_u8(svptrue_b8(), dest, svreinterpret_u8_u32(src));
 }
 
-// TODO: compress_neon
+INLINE svuint32_4_t add_128(svuint32_4_t a, svuint32_4_t b) {
+  return svadd_u32_x(svptrue_b32(), a, b);
+}
 
-// TODO: hash2_neon
+INLINE svuint32_4_t xor_128(svuint32_4_t a, svuint32_4_t b) {
+  return sveor_u32_x(svptrue_b32(), a, b);
+}
+
+INLINE svuint32_4_t set1_128(uint32_t x) { return svdup_n_u32(x); }
+
+INLINE svuint32_4_t set4(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+  uint32_t array[4] = {a, b, c, d};
+  return svld1_u32(svptrue_b32(), array);
+}
+
+INLINE svuint32_4_t xar16_128(svuint32_4_t a, svuint32_4_t b) {
+  return svxar_n_u32(a, b, 16);
+}
+
+INLINE svuint32_4_t xar12_128(svuint32_4_t a, svuint32_4_t b) {
+  return svxar_n_u32(a, b, 12);
+}
+
+INLINE svuint32_4_t xar8_128(svuint32_4_t a, svuint32_4_t b) {
+  return svxar_n_u32(a, b, 8);
+}
+
+INLINE svuint32_4_t xar7_128(svuint32_4_t a, svuint32_4_t b) {
+  return svxar_n_u32(a, b, 7);
+}
 
 /*
  * ----------------------------------------------------------------------------
- * hash4_neon
+ * hash4_sve2
  * ----------------------------------------------------------------------------
  */
 
-INLINE void round_fn4(uint32x4_t v[16], uint32x4_t m[16], size_t r) {
+INLINE void round_fn4(svuint32_4_t v[16], svuint32_4_t m[16], size_t r) {
   v[0] = add_128(v[0], m[(size_t)MSG_SCHEDULE[r][0]]);
   v[1] = add_128(v[1], m[(size_t)MSG_SCHEDULE[r][2]]);
   v[2] = add_128(v[2], m[(size_t)MSG_SCHEDULE[r][4]]);
@@ -85,26 +73,18 @@ INLINE void round_fn4(uint32x4_t v[16], uint32x4_t m[16], size_t r) {
   v[1] = add_128(v[1], v[5]);
   v[2] = add_128(v[2], v[6]);
   v[3] = add_128(v[3], v[7]);
-  v[12] = xor_128(v[12], v[0]);
-  v[13] = xor_128(v[13], v[1]);
-  v[14] = xor_128(v[14], v[2]);
-  v[15] = xor_128(v[15], v[3]);
-  v[12] = rot16_128(v[12]);
-  v[13] = rot16_128(v[13]);
-  v[14] = rot16_128(v[14]);
-  v[15] = rot16_128(v[15]);
+  v[12] = xar16_128(v[12], v[0]);
+  v[13] = xar16_128(v[13], v[1]);
+  v[14] = xar16_128(v[14], v[2]);
+  v[15] = xar16_128(v[15], v[3]);
   v[8] = add_128(v[8], v[12]);
   v[9] = add_128(v[9], v[13]);
   v[10] = add_128(v[10], v[14]);
   v[11] = add_128(v[11], v[15]);
-  v[4] = xor_128(v[4], v[8]);
-  v[5] = xor_128(v[5], v[9]);
-  v[6] = xor_128(v[6], v[10]);
-  v[7] = xor_128(v[7], v[11]);
-  v[4] = rot12_128(v[4]);
-  v[5] = rot12_128(v[5]);
-  v[6] = rot12_128(v[6]);
-  v[7] = rot12_128(v[7]);
+  v[4] = xar12_128(v[4], v[8]);
+  v[5] = xar12_128(v[5], v[9]);
+  v[6] = xar12_128(v[6], v[10]);
+  v[7] = xar12_128(v[7], v[11]);
   v[0] = add_128(v[0], m[(size_t)MSG_SCHEDULE[r][1]]);
   v[1] = add_128(v[1], m[(size_t)MSG_SCHEDULE[r][3]]);
   v[2] = add_128(v[2], m[(size_t)MSG_SCHEDULE[r][5]]);
@@ -113,26 +93,18 @@ INLINE void round_fn4(uint32x4_t v[16], uint32x4_t m[16], size_t r) {
   v[1] = add_128(v[1], v[5]);
   v[2] = add_128(v[2], v[6]);
   v[3] = add_128(v[3], v[7]);
-  v[12] = xor_128(v[12], v[0]);
-  v[13] = xor_128(v[13], v[1]);
-  v[14] = xor_128(v[14], v[2]);
-  v[15] = xor_128(v[15], v[3]);
-  v[12] = rot8_128(v[12]);
-  v[13] = rot8_128(v[13]);
-  v[14] = rot8_128(v[14]);
-  v[15] = rot8_128(v[15]);
+  v[12] = xar8_128(v[12], v[0]);
+  v[13] = xar8_128(v[13], v[1]);
+  v[14] = xar8_128(v[14], v[2]);
+  v[15] = xar8_128(v[15], v[3]);
   v[8] = add_128(v[8], v[12]);
   v[9] = add_128(v[9], v[13]);
   v[10] = add_128(v[10], v[14]);
   v[11] = add_128(v[11], v[15]);
-  v[4] = xor_128(v[4], v[8]);
-  v[5] = xor_128(v[5], v[9]);
-  v[6] = xor_128(v[6], v[10]);
-  v[7] = xor_128(v[7], v[11]);
-  v[4] = rot7_128(v[4]);
-  v[5] = rot7_128(v[5]);
-  v[6] = rot7_128(v[6]);
-  v[7] = rot7_128(v[7]);
+  v[4] = xar7_128(v[4], v[8]);
+  v[5] = xar7_128(v[5], v[9]);
+  v[6] = xar7_128(v[6], v[10]);
+  v[7] = xar7_128(v[7], v[11]);
 
   v[0] = add_128(v[0], m[(size_t)MSG_SCHEDULE[r][8]]);
   v[1] = add_128(v[1], m[(size_t)MSG_SCHEDULE[r][10]]);
@@ -142,26 +114,18 @@ INLINE void round_fn4(uint32x4_t v[16], uint32x4_t m[16], size_t r) {
   v[1] = add_128(v[1], v[6]);
   v[2] = add_128(v[2], v[7]);
   v[3] = add_128(v[3], v[4]);
-  v[15] = xor_128(v[15], v[0]);
-  v[12] = xor_128(v[12], v[1]);
-  v[13] = xor_128(v[13], v[2]);
-  v[14] = xor_128(v[14], v[3]);
-  v[15] = rot16_128(v[15]);
-  v[12] = rot16_128(v[12]);
-  v[13] = rot16_128(v[13]);
-  v[14] = rot16_128(v[14]);
+  v[15] = xar16_128(v[15], v[0]);
+  v[12] = xar16_128(v[12], v[1]);
+  v[13] = xar16_128(v[13], v[2]);
+  v[14] = xar16_128(v[14], v[3]);
   v[10] = add_128(v[10], v[15]);
   v[11] = add_128(v[11], v[12]);
   v[8] = add_128(v[8], v[13]);
   v[9] = add_128(v[9], v[14]);
-  v[5] = xor_128(v[5], v[10]);
-  v[6] = xor_128(v[6], v[11]);
-  v[7] = xor_128(v[7], v[8]);
-  v[4] = xor_128(v[4], v[9]);
-  v[5] = rot12_128(v[5]);
-  v[6] = rot12_128(v[6]);
-  v[7] = rot12_128(v[7]);
-  v[4] = rot12_128(v[4]);
+  v[5] = xar12_128(v[5], v[10]);
+  v[6] = xar12_128(v[6], v[11]);
+  v[7] = xar12_128(v[7], v[8]);
+  v[4] = xar12_128(v[4], v[9]);
   v[0] = add_128(v[0], m[(size_t)MSG_SCHEDULE[r][9]]);
   v[1] = add_128(v[1], m[(size_t)MSG_SCHEDULE[r][11]]);
   v[2] = add_128(v[2], m[(size_t)MSG_SCHEDULE[r][13]]);
@@ -170,62 +134,57 @@ INLINE void round_fn4(uint32x4_t v[16], uint32x4_t m[16], size_t r) {
   v[1] = add_128(v[1], v[6]);
   v[2] = add_128(v[2], v[7]);
   v[3] = add_128(v[3], v[4]);
-  v[15] = xor_128(v[15], v[0]);
-  v[12] = xor_128(v[12], v[1]);
-  v[13] = xor_128(v[13], v[2]);
-  v[14] = xor_128(v[14], v[3]);
-  v[15] = rot8_128(v[15]);
-  v[12] = rot8_128(v[12]);
-  v[13] = rot8_128(v[13]);
-  v[14] = rot8_128(v[14]);
+  v[15] = xar8_128(v[15], v[0]);
+  v[12] = xar8_128(v[12], v[1]);
+  v[13] = xar8_128(v[13], v[2]);
+  v[14] = xar8_128(v[14], v[3]);
   v[10] = add_128(v[10], v[15]);
   v[11] = add_128(v[11], v[12]);
   v[8] = add_128(v[8], v[13]);
   v[9] = add_128(v[9], v[14]);
-  v[5] = xor_128(v[5], v[10]);
-  v[6] = xor_128(v[6], v[11]);
-  v[7] = xor_128(v[7], v[8]);
-  v[4] = xor_128(v[4], v[9]);
-  v[5] = rot7_128(v[5]);
-  v[6] = rot7_128(v[6]);
-  v[7] = rot7_128(v[7]);
-  v[4] = rot7_128(v[4]);
+  v[5] = xar7_128(v[5], v[10]);
+  v[6] = xar7_128(v[6], v[11]);
+  v[7] = xar7_128(v[7], v[8]);
+  v[4] = xar7_128(v[4], v[9]);
 }
 
-INLINE void transpose_vecs_128(uint32x4_t vecs[4]) {
+INLINE void transpose_vecs_128(svuint32_4_t vecs[4]) {
   // Individually transpose the four 2x2 sub-matrices in each corner.
-  uint32x4x2_t rows01 = vtrnq_u32(vecs[0], vecs[1]);
-  uint32x4x2_t rows23 = vtrnq_u32(vecs[2], vecs[3]);
+  svuint32_4_t t0 = svtrn1_u32(vecs[0], vecs[1]);
+  svuint32_4_t t1 = svtrn2_u32(vecs[0], vecs[1]);
+  svuint32_4_t t2 = svtrn1_u32(vecs[2], vecs[3]);
+  svuint32_4_t t3 = svtrn2_u32(vecs[2], vecs[3]);
 
   // Swap the top-right and bottom-left 2x2s (which just got transposed).
-  vecs[0] =
-      vcombine_u32(vget_low_u32(rows01.val[0]), vget_low_u32(rows23.val[0]));
-  vecs[1] =
-      vcombine_u32(vget_low_u32(rows01.val[1]), vget_low_u32(rows23.val[1]));
-  vecs[2] =
-      vcombine_u32(vget_high_u32(rows01.val[0]), vget_high_u32(rows23.val[0]));
-  vecs[3] =
-      vcombine_u32(vget_high_u32(rows01.val[1]), vget_high_u32(rows23.val[1]));
+  svuint64_2_t a0 = svreinterpret_u64_u32(t0);
+  svuint64_2_t a1 = svreinterpret_u64_u32(t1);
+  svuint64_2_t a2 = svreinterpret_u64_u32(t2);
+  svuint64_2_t a3 = svreinterpret_u64_u32(t3);
+
+  vecs[0] = svreinterpret_u32_u64(svzip1_u64(a0, a2));
+  vecs[1] = svreinterpret_u32_u64(svzip1_u64(a1, a3));
+  vecs[2] = svreinterpret_u32_u64(svzip2_u64(a0, a2));
+  vecs[3] = svreinterpret_u32_u64(svzip2_u64(a1, a3));
 }
 
 INLINE void transpose_msg_vecs4(const uint8_t *const *inputs,
-                                size_t block_offset, uint32x4_t out[16]) {
-  out[0] = loadu_128(&inputs[0][block_offset + 0 * sizeof(uint32x4_t)]);
-  out[1] = loadu_128(&inputs[1][block_offset + 0 * sizeof(uint32x4_t)]);
-  out[2] = loadu_128(&inputs[2][block_offset + 0 * sizeof(uint32x4_t)]);
-  out[3] = loadu_128(&inputs[3][block_offset + 0 * sizeof(uint32x4_t)]);
-  out[4] = loadu_128(&inputs[0][block_offset + 1 * sizeof(uint32x4_t)]);
-  out[5] = loadu_128(&inputs[1][block_offset + 1 * sizeof(uint32x4_t)]);
-  out[6] = loadu_128(&inputs[2][block_offset + 1 * sizeof(uint32x4_t)]);
-  out[7] = loadu_128(&inputs[3][block_offset + 1 * sizeof(uint32x4_t)]);
-  out[8] = loadu_128(&inputs[0][block_offset + 2 * sizeof(uint32x4_t)]);
-  out[9] = loadu_128(&inputs[1][block_offset + 2 * sizeof(uint32x4_t)]);
-  out[10] = loadu_128(&inputs[2][block_offset + 2 * sizeof(uint32x4_t)]);
-  out[11] = loadu_128(&inputs[3][block_offset + 2 * sizeof(uint32x4_t)]);
-  out[12] = loadu_128(&inputs[0][block_offset + 3 * sizeof(uint32x4_t)]);
-  out[13] = loadu_128(&inputs[1][block_offset + 3 * sizeof(uint32x4_t)]);
-  out[14] = loadu_128(&inputs[2][block_offset + 3 * sizeof(uint32x4_t)]);
-  out[15] = loadu_128(&inputs[3][block_offset + 3 * sizeof(uint32x4_t)]);
+                                size_t block_offset, svuint32_4_t out[16]) {
+  out[0] = loadu_128(&inputs[0][block_offset + 0 * sizeof(svuint32_4_t)]);
+  out[1] = loadu_128(&inputs[1][block_offset + 0 * sizeof(svuint32_4_t)]);
+  out[2] = loadu_128(&inputs[2][block_offset + 0 * sizeof(svuint32_4_t)]);
+  out[3] = loadu_128(&inputs[3][block_offset + 0 * sizeof(svuint32_4_t)]);
+  out[4] = loadu_128(&inputs[0][block_offset + 1 * sizeof(svuint32_4_t)]);
+  out[5] = loadu_128(&inputs[1][block_offset + 1 * sizeof(svuint32_4_t)]);
+  out[6] = loadu_128(&inputs[2][block_offset + 1 * sizeof(svuint32_4_t)]);
+  out[7] = loadu_128(&inputs[3][block_offset + 1 * sizeof(svuint32_4_t)]);
+  out[8] = loadu_128(&inputs[0][block_offset + 2 * sizeof(svuint32_4_t)]);
+  out[9] = loadu_128(&inputs[1][block_offset + 2 * sizeof(svuint32_4_t)]);
+  out[10] = loadu_128(&inputs[2][block_offset + 2 * sizeof(svuint32_4_t)]);
+  out[11] = loadu_128(&inputs[3][block_offset + 2 * sizeof(svuint32_4_t)]);
+  out[12] = loadu_128(&inputs[0][block_offset + 3 * sizeof(svuint32_4_t)]);
+  out[13] = loadu_128(&inputs[1][block_offset + 3 * sizeof(svuint32_4_t)]);
+  out[14] = loadu_128(&inputs[2][block_offset + 3 * sizeof(svuint32_4_t)]);
+  out[15] = loadu_128(&inputs[3][block_offset + 3 * sizeof(svuint32_4_t)]);
   transpose_vecs_128(&out[0]);
   transpose_vecs_128(&out[4]);
   transpose_vecs_128(&out[8]);
@@ -233,7 +192,7 @@ INLINE void transpose_msg_vecs4(const uint8_t *const *inputs,
 }
 
 INLINE void load_counters4(uint64_t counter, bool increment_counter,
-                           uint32x4_t *out_low, uint32x4_t *out_high) {
+                           svuint32_4_t *out_low, svuint32_4_t *out_high) {
   uint64_t mask = (increment_counter ? ~0 : 0);
   *out_low = set4(
       counter_low(counter + (mask & 0)), counter_low(counter + (mask & 1)),
@@ -243,16 +202,16 @@ INLINE void load_counters4(uint64_t counter, bool increment_counter,
       counter_high(counter + (mask & 2)), counter_high(counter + (mask & 3)));
 }
 
-static void blake3_hash4_neon(const uint8_t *const *inputs, size_t blocks,
+static void blake3_hash4_sve2(const uint8_t *const *inputs, size_t blocks,
                               const uint32_t key[8], uint64_t counter,
                               bool increment_counter, uint8_t flags,
                               uint8_t flags_start, uint8_t flags_end, 
                               uint8_t *out) {
-  uint32x4_t h_vecs[8] = {
+  svuint32_4_t h_vecs[8] = {
       set1_128(key[0]), set1_128(key[1]), set1_128(key[2]), set1_128(key[3]),
       set1_128(key[4]), set1_128(key[5]), set1_128(key[6]), set1_128(key[7]),
   };
-  uint32x4_t counter_low_vec, counter_high_vec;
+  svuint32_4_t counter_low_vec, counter_high_vec;
   load_counters4(counter, increment_counter, &counter_low_vec,
                  &counter_high_vec);
   uint8_t block_flags = flags | flags_start;
@@ -261,12 +220,12 @@ static void blake3_hash4_neon(const uint8_t *const *inputs, size_t blocks,
     if (block + 1 == blocks) {
       block_flags |= flags_end;
     }
-    uint32x4_t block_len_vec = set1_128(BLAKE3_BLOCK_LEN);
-    uint32x4_t block_flags_vec = set1_128(block_flags);
-    uint32x4_t msg_vecs[16];
+    svuint32_4_t block_len_vec = set1_128(BLAKE3_BLOCK_LEN);
+    svuint32_4_t block_flags_vec = set1_128(block_flags);
+    svuint32_4_t msg_vecs[16];
     transpose_msg_vecs4(inputs, block * BLAKE3_BLOCK_LEN, msg_vecs);
 
-    uint32x4_t v[16] = {
+    svuint32_4_t v[16] = {
         h_vecs[0],       h_vecs[1],        h_vecs[2],       h_vecs[3],
         h_vecs[4],       h_vecs[5],        h_vecs[6],       h_vecs[7],
         set1_128(IV[0]), set1_128(IV[1]),  set1_128(IV[2]), set1_128(IV[3]),
@@ -295,19 +254,19 @@ static void blake3_hash4_neon(const uint8_t *const *inputs, size_t blocks,
   transpose_vecs_128(&h_vecs[4]);
   // The first four vecs now contain the first half of each output, and the
   // second four vecs contain the second half of each output.
-  storeu_128(h_vecs[0], &out[0 * sizeof(uint32x4_t)]);
-  storeu_128(h_vecs[4], &out[1 * sizeof(uint32x4_t)]);
-  storeu_128(h_vecs[1], &out[2 * sizeof(uint32x4_t)]);
-  storeu_128(h_vecs[5], &out[3 * sizeof(uint32x4_t)]);
-  storeu_128(h_vecs[2], &out[4 * sizeof(uint32x4_t)]);
-  storeu_128(h_vecs[6], &out[5 * sizeof(uint32x4_t)]);
-  storeu_128(h_vecs[3], &out[6 * sizeof(uint32x4_t)]);
-  storeu_128(h_vecs[7], &out[7 * sizeof(uint32x4_t)]);
+  storeu_128(h_vecs[0], &out[0 * sizeof(svuint32_4_t)]);
+  storeu_128(h_vecs[4], &out[1 * sizeof(svuint32_4_t)]);
+  storeu_128(h_vecs[1], &out[2 * sizeof(svuint32_4_t)]);
+  storeu_128(h_vecs[5], &out[3 * sizeof(svuint32_4_t)]);
+  storeu_128(h_vecs[2], &out[4 * sizeof(svuint32_4_t)]);
+  storeu_128(h_vecs[6], &out[5 * sizeof(svuint32_4_t)]);
+  storeu_128(h_vecs[3], &out[6 * sizeof(svuint32_4_t)]);
+  storeu_128(h_vecs[7], &out[7 * sizeof(svuint32_4_t)]);
 }
 
 /*
  * ----------------------------------------------------------------------------
- * hash_many_neon
+ * hash_many_sve2
  * ----------------------------------------------------------------------------
  */
 
@@ -316,7 +275,7 @@ void blake3_compress_in_place_portable(uint32_t cv[8],
                                        uint8_t block_len, uint64_t counter,
                                        uint8_t flags);
 
-INLINE void hash_one_neon(const uint8_t *input, size_t blocks,
+INLINE void hash_one_sve2(const uint8_t *input, size_t blocks,
                           const uint32_t key[8], uint64_t counter,
                           uint8_t flags, uint8_t flags_start, uint8_t flags_end,
                           uint8_t out[BLAKE3_OUT_LEN]) {
@@ -327,9 +286,6 @@ INLINE void hash_one_neon(const uint8_t *input, size_t blocks,
     if (blocks == 1) {
       block_flags |= flags_end;
     }
-    // TODO: Implement compress_neon. However note that according to
-    // https://github.com/BLAKE2/BLAKE2/commit/7965d3e6e1b4193438b8d3a656787587d2579227,
-    // compress_neon might not be any faster than compress_portable.
     blake3_compress_in_place_portable(cv, input, BLAKE3_BLOCK_LEN, counter,
                                       block_flags);
     input = &input[BLAKE3_BLOCK_LEN];
@@ -339,13 +295,13 @@ INLINE void hash_one_neon(const uint8_t *input, size_t blocks,
   memcpy(out, cv, BLAKE3_OUT_LEN);
 }
 
-void blake3_hash_many_neon(const uint8_t *const *inputs, size_t num_inputs,
+void blake3_hash_many_sve2(const uint8_t *const *inputs, size_t num_inputs,
                            size_t blocks, const uint32_t key[8],
                            uint64_t counter, bool increment_counter,
                            uint8_t flags, uint8_t flags_start,
                            uint8_t flags_end, uint8_t *out) {
   while (num_inputs >= 4) {
-    blake3_hash4_neon(inputs, blocks, key, counter, increment_counter, flags,
+    blake3_hash4_sve2(inputs, blocks, key, counter, increment_counter, flags,
                       flags_start, flags_end, out);
     if (increment_counter) {
       counter += 4;
@@ -355,7 +311,7 @@ void blake3_hash_many_neon(const uint8_t *const *inputs, size_t num_inputs,
     out = &out[4 * BLAKE3_OUT_LEN];
   }
   while (num_inputs > 0) {
-    hash_one_neon(inputs[0], blocks, key, counter, flags, flags_start,
+    hash_one_sve2(inputs[0], blocks, key, counter, flags, flags_start,
                   flags_end, out);
     if (increment_counter) {
       counter += 1;
