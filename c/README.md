@@ -404,6 +404,8 @@ with `-march=armv8-a+sme`. Keep `blake3_neon.c` for fallback.
 Dispatch checks SME support and the calling thread's streaming vector length,
 which must be at least 512 bits. Batches smaller than 16 inputs use the existing
 backend. The library does not change or cache the streaming vector length.
+Tree batches remain 16-wide across threads, including TBB workers with different
+streaming vector lengths; fallback backends process the same batch sizes.
 Direct calls to `blake3_hash_many_sme` require `blake3_sme_supported()` to
 succeed on the calling thread. This option applies to the C implementation.
 
@@ -419,6 +421,8 @@ CI runs these tests under QEMU with SME disabled and with 128-, 256-, 512-,
 1024-, and 2048-bit streaming vectors. `BLAKE3_TEST_EXPECT_SME=1` requires the
 direct SME test to run, while `0` requires fallback. This checks instruction
 execution and dispatch without relying on the runner's hardware features.
+The matrix also enables TBB and tests a 512-bit caller with a pool initialized
+at 128 bits. The SME-enabled CMake CI-test target is built and run separately.
 
 ### Other Platforms
 

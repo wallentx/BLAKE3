@@ -428,6 +428,60 @@ fn test_sme_supported() {
     }
 }
 
+#[test]
+#[cfg(all(feature = "sme", feature = "tbb"))]
+fn test_tbb_sme_mixed_vector_lengths() {
+    // Change only a dedicated thread's VL. The TBB pool is warmed at the
+    // shorter length before the calling thread switches to the wider length.
+    std::thread::spawn(|| {
+        use std::ffi::{c_int, c_ulong};
+        unsafe extern "C" {
+            fn prctl(option: c_int, ...) -> c_int;
+        }
+        const PR_SME_SET_VL: c_int = 63;
+        let set_vl = |len: c_ulong| unsafe {
+            prctl(PR_SME_SET_VL, len, 0 as c_ulong, 0 as c_ulong, 0 as c_ulong)
+        };
+        let short = set_vl(16);
+        let wide = set_vl(64);
+        let can_change = short == 16 && wide == 64;
+        if std::env::var("BLAKE3_TEST_REQUIRE_MIXED_SME").as_deref() == Ok("1") {
+            assert!(
+                can_change,
+                "mixed-width test requires both 128- and 512-bit SME"
+            );
+        }
+        if !can_change {
+            return;
+        }
+
+        let mut input = vec![0; 1024 * CHUNK_LEN];
+        paint_test_input(&mut input);
+        let mut reference_hasher = reference_impl::Hasher::new();
+        reference_hasher.update(&input);
+        let mut expected = [0; 303];
+        reference_hasher.finalize(&mut expected);
+
+        assert_eq!(set_vl(16), 16);
+        let mut warmup = crate::Hasher::new();
+        warmup.update_tbb(&input);
+        let mut output = [0; 303];
+        warmup.finalize(&mut output);
+        assert_eq!(expected, output);
+
+        assert_eq!(set_vl(64), 64);
+        assert!(unsafe { crate::ffi::sme::blake3_sme_supported() });
+        for _ in 0..4 {
+            let mut hasher = crate::Hasher::new();
+            hasher.update_tbb(&input);
+            hasher.finalize(&mut output);
+            assert_eq!(expected, output);
+        }
+    })
+    .join()
+    .unwrap();
+}
+
 #[allow(unused)]
 type XofManyFunction = unsafe extern "C" fn(
     cv: *const u32,

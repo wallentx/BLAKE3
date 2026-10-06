@@ -393,12 +393,13 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
                             out);
 }
 
-// The dynamically detected SIMD degree of the current platform.
+// The batching degree used to lay out recursive subtree outputs.
 size_t blake3_simd_degree(void) {
 #if BLAKE3_USE_SME
-  if (blake3_sme_supported()) {
-    return 16;
-  }
+  // TBB workers can have different streaming vector lengths. Keep their
+  // output layouts identical; hash_many selects a safe backend per thread
+  // and the fallback implementations can process the same 16-input batches.
+  return 16;
 #endif
 #if defined(IS_X86)
   const enum cpu_feature features = get_cpu_features();
