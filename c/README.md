@@ -393,21 +393,25 @@ gcc -shared -O3 -o libblake3.so -DBLAKE3_USE_NEON=1 -DBLAKE3_USE_SVE2=1 \
 
 The SME implementation is opt-in on little-endian AArch64 Linux and Android.
 It uses streaming SVE arithmetic and ZA transposition to hash 16 inputs in
-parallel. It requires base SME, not SME2, and a compiler supporting
+parallel. On SME2 hardware, a second backend reads two transposed vectors per
+instruction; base SME remains the fallback. Building requires a compiler supporting
 `<arm_sme.h>`, `__arm_locally_streaming`, and `__arm_new("za")` (tested with
 Clang 21).
 
 With CMake, set `BLAKE3_USE_SME=ON`. For manual builds, define
-`BLAKE3_USE_SME=1` and add `blake3_sme.c`, compiling only that source file
-with `-march=armv8-a+sme`. Keep `blake3_neon.c` for fallback.
+`BLAKE3_USE_SME=1` and add `blake3_sme.c` and `blake3_sme2.c`, compiling them
+separately with `-march=armv8-a+sme` and `-march=armv8-a+sme2`, respectively.
+Keep `blake3_neon.c` for fallback.
 
 Dispatch checks SME support and the calling thread's streaming vector length,
 which must be at least 512 bits. Batches smaller than 16 inputs use the existing
 backend. The library does not change or cache the streaming vector length.
+It reads that length with `RDSVL`, after checking hardware support.
 Tree batches remain 16-wide across threads, including TBB workers with different
 streaming vector lengths; fallback backends process the same batch sizes.
 Direct calls to `blake3_hash_many_sme` require `blake3_sme_supported()` to
-succeed on the calling thread. This option applies to the C implementation.
+succeed on the calling thread; the SME2 entry point similarly requires
+`blake3_sme2_supported()`. This option applies to the C implementation.
 
 The C bindings expose an `sme` feature for tests and benchmarks:
 
@@ -421,8 +425,13 @@ CI runs these tests under QEMU with SME disabled and with 128-, 256-, 512-,
 1024-, and 2048-bit streaming vectors. `BLAKE3_TEST_EXPECT_SME=1` requires the
 direct SME test to run, while `0` requires fallback. This checks instruction
 execution and dispatch without relying on the runner's hardware features.
+`BLAKE3_TEST_EXPECT_SME2` provides the same assertion for the SME2 backend.
 The matrix also enables TBB and tests a 512-bit caller with a pool initialized
 at 128 bits. The SME-enabled CMake CI-test target is built and run separately.
+
+Performance depends on the workload and implementation. In particular, some
+processors share an SME execution unit between cores, so single-thread gains
+do not imply that parallel TBB hashing will scale similarly.
 
 ### Other Platforms
 

@@ -3,17 +3,29 @@
 #include <arm_sme.h>
 #include <arm_sve.h>
 
-size_t blake3_sme_vector_length(void) { return (size_t)svcntsb(); }
-
-// This backend uses base SME, including streaming SVE's XAR instruction. SME2
-// is not required. Compile this file separately with -march=armv8-a+sme.
-// The caller must check blake3_sme_supported() before calling this function.
-// A streaming vector length of at least 512 bits is required: each ZA0.S row
-// holds one complete input block, and its columns hold words from 16 inputs.
-// Predicates restrict wider implementations to the same 16-input batch size.
-
-// SVE vector types cannot be array elements. Keep the state in named vectors.
-#define MESSAGE(i) svread_ver_za32_u32_m(svdup_n_u32(0), lanes, 0, (i))
+// SME2 reads the transposed input two vectors at a time. Compile separately
+// with -march=armv8-a+sme2, and check blake3_sme2_supported() before direct
+// use. Like the SME backend, this requires at least 512 streaming bits.
+//
+// SVE vector types cannot be array elements. MESSAGE selects named vectors;
+// its indices come from the constant, unrolled MSG_SCHEDULE and fold away.
+#define MESSAGE(i)                                                             \
+  ((i) == 0    ? m0                                                            \
+   : (i) == 1  ? m1                                                            \
+   : (i) == 2  ? m2                                                            \
+   : (i) == 3  ? m3                                                            \
+   : (i) == 4  ? m4                                                            \
+   : (i) == 5  ? m5                                                            \
+   : (i) == 6  ? m6                                                            \
+   : (i) == 7  ? m7                                                            \
+   : (i) == 8  ? m8                                                            \
+   : (i) == 9  ? m9                                                            \
+   : (i) == 10 ? m10                                                           \
+   : (i) == 11 ? m11                                                           \
+   : (i) == 12 ? m12                                                           \
+   : (i) == 13 ? m13                                                           \
+   : (i) == 14 ? m14                                                           \
+               : m15)
 #define ADD(a, b) svadd_u32_x(lanes, (a), (b))
 #define XOR(a, b) sveor_u32_x(lanes, (a), (b))
 #define G(a, b, c, d, x, y)                                                    \
@@ -39,7 +51,7 @@ size_t blake3_sme_vector_length(void) { return (size_t)svcntsb(); }
     G(v3, v4, v9, v14, MSG_SCHEDULE[r][14], MSG_SCHEDULE[r][15]);              \
   } while (0)
 
-__arm_new("za") __arm_locally_streaming void blake3_hash_many_sme(
+__arm_new("za") __arm_locally_streaming void blake3_hash_many_sme2(
     const uint8_t *const *inputs, size_t num_inputs, size_t blocks,
     const uint32_t key[8], uint64_t counter, bool increment_counter,
     uint8_t flags, uint8_t flags_start, uint8_t flags_end, uint8_t *out) {
@@ -68,6 +80,30 @@ __arm_new("za") __arm_locally_streaming void blake3_hash_many_sme(
         svld1_hor_za32(0, lane, block_words,
                        inputs[lane] + block * BLAKE3_BLOCK_LEN);
       }
+      svuint32x2_t m0_1 = svread_ver_za32_u32_vg2(0, 0);
+      svuint32_t m0 = svget2_u32(m0_1, 0);
+      svuint32_t m1 = svget2_u32(m0_1, 1);
+      svuint32x2_t m2_3 = svread_ver_za32_u32_vg2(0, 2);
+      svuint32_t m2 = svget2_u32(m2_3, 0);
+      svuint32_t m3 = svget2_u32(m2_3, 1);
+      svuint32x2_t m4_5 = svread_ver_za32_u32_vg2(0, 4);
+      svuint32_t m4 = svget2_u32(m4_5, 0);
+      svuint32_t m5 = svget2_u32(m4_5, 1);
+      svuint32x2_t m6_7 = svread_ver_za32_u32_vg2(0, 6);
+      svuint32_t m6 = svget2_u32(m6_7, 0);
+      svuint32_t m7 = svget2_u32(m6_7, 1);
+      svuint32x2_t m8_9 = svread_ver_za32_u32_vg2(0, 8);
+      svuint32_t m8 = svget2_u32(m8_9, 0);
+      svuint32_t m9 = svget2_u32(m8_9, 1);
+      svuint32x2_t m10_11 = svread_ver_za32_u32_vg2(0, 10);
+      svuint32_t m10 = svget2_u32(m10_11, 0);
+      svuint32_t m11 = svget2_u32(m10_11, 1);
+      svuint32x2_t m12_13 = svread_ver_za32_u32_vg2(0, 12);
+      svuint32_t m12 = svget2_u32(m12_13, 0);
+      svuint32_t m13 = svget2_u32(m12_13, 1);
+      svuint32x2_t m14_15 = svread_ver_za32_u32_vg2(0, 14);
+      svuint32_t m14 = svget2_u32(m14_15, 0);
+      svuint32_t m15 = svget2_u32(m14_15, 1);
       uint8_t block_flags = flags;
       if (block == 0) {
         block_flags |= flags_start;

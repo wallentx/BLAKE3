@@ -366,8 +366,22 @@ pub mod ffi {
             pub fn sme_supported(hwcap2: std::ffi::c_ulong, vector_length: std::ffi::c_int)
             -> bool;
             pub fn blake3_sme_supported() -> bool;
+            pub fn blake3_sme2_supported() -> bool;
             // Call only when blake3_sme_supported() returns true on this thread.
             pub fn blake3_hash_many_sme(
+                inputs: *const *const u8,
+                num_inputs: usize,
+                blocks: usize,
+                key: *const u32,
+                counter: u64,
+                increment_counter: bool,
+                flags: u8,
+                flags_start: u8,
+                flags_end: u8,
+                out: *mut u8,
+            );
+            // Call only when blake3_sme2_supported() returns true on this thread.
+            pub fn blake3_hash_many_sme2(
                 inputs: *const *const u8,
                 num_inputs: usize,
                 blocks: usize,

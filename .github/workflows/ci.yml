@@ -274,6 +274,7 @@ jobs:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64
       QEMU_CPU: ${{ matrix.cpu }}
       BLAKE3_TEST_EXPECT_SME: ${{ matrix.expected }}
+      BLAKE3_TEST_EXPECT_SME2: ${{ matrix.expected }}
       BLAKE3_TEST_REQUIRE_MIXED_SME: ${{ matrix.require_mixed || '0' }}
     steps:
     - uses: actions/checkout@v4
@@ -288,7 +289,7 @@ jobs:
       if: matrix.name == '512-bit'
       run: |
         lscpu
-        env -u CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER -u BLAKE3_TEST_EXPECT_SME -u QEMU_CPU \
+        env -u CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER -u BLAKE3_TEST_EXPECT_SME -u BLAKE3_TEST_EXPECT_SME2 -u QEMU_CPU \
           cargo test --target=aarch64-unknown-linux-gnu --features=sme,tbb
       working-directory: ./c/blake3_c_rust_bindings
     - name: cargo test C bindings SME

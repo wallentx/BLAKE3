@@ -63,6 +63,7 @@ elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU"
   set(BLAKE3_CFLAGS_AVX512 "-mavx512f -mavx512vl" CACHE STRING "the compiler flags to enable AVX512")
 
   set(BLAKE3_CFLAGS_SME "-march=armv8-a+sme" CACHE STRING "the compiler flags to enable SME")
+  set(BLAKE3_CFLAGS_SME2 "-march=armv8-a+sme2" CACHE STRING "the compiler flags to enable SME2")
 
   if (WIN32 OR CYGWIN)
     set(BLAKE3_AMD64_ASM_SOURCES
@@ -94,7 +95,7 @@ option(BLAKE3_USE_SVE2 "use the SVE2 backend on AArch64 when the CPU supports it
 set(BLAKE3_CFLAGS_SVE2 "-march=armv8-a+sve2 -msve-vector-bits=128" CACHE STRING "the compiler flags to enable SVE2")
 
 mark_as_advanced(BLAKE3_CFLAGS_SSE2 BLAKE3_CFLAGS_SSE4.1 BLAKE3_CFLAGS_AVX2 BLAKE3_CFLAGS_AVX512 BLAKE3_CFLAGS_NEON BLAKE3_CFLAGS_SVE2)
-mark_as_advanced(BLAKE3_CFLAGS_SME)
+mark_as_advanced(BLAKE3_CFLAGS_SME BLAKE3_CFLAGS_SME2)
 mark_as_advanced(BLAKE3_AMD64_ASM_SOURCES)
 
 message(STATUS "BLAKE3 SIMD configuration: ${CMAKE_C_COMPILER_ARCHITECTURE_ID}")
@@ -250,9 +251,10 @@ if(BLAKE3_USE_SME)
       OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Android)$")
     message(FATAL_ERROR "BLAKE3_USE_SME requires AArch64 Linux/Android with NEON enabled")
   endif()
-  target_sources(blake3 PRIVATE blake3_sme.c)
+  target_sources(blake3 PRIVATE blake3_sme.c blake3_sme2.c)
   target_compile_definitions(blake3 PRIVATE BLAKE3_USE_SME=1)
   set_source_files_properties(blake3_sme.c PROPERTIES COMPILE_FLAGS "${BLAKE3_CFLAGS_SME}")
+  set_source_files_properties(blake3_sme2.c PROPERTIES COMPILE_FLAGS "${BLAKE3_CFLAGS_SME2}")
 endif()
 
 if(BLAKE3_USE_TBB)

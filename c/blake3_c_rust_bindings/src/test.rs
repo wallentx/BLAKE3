@@ -403,13 +403,26 @@ fn test_hash_many_sme() {
 
 #[test]
 #[cfg(feature = "sme")]
+fn test_hash_many_sme2() {
+    let supported = unsafe { crate::ffi::sme::blake3_sme2_supported() };
+    if let Some(expected) = std::env::var_os("BLAKE3_TEST_EXPECT_SME2") {
+        assert_eq!(expected, if supported { "1" } else { "0" });
+    }
+    if !supported {
+        return;
+    }
+    test_hash_many_fn(crate::ffi::sme::blake3_hash_many_sme2);
+}
+
+#[test]
+#[cfg(feature = "sme")]
 fn test_sme_supported() {
     const HWCAP2_SME: std::ffi::c_ulong = 1 << 23;
     let cases = [
         (0, -1, false),
         (0, 64, false),
         (1 << 1, 64, false),     // SVE2 without SME
-        (HWCAP2_SME, -1, false), // failed PR_SME_GET_VL
+        (HWCAP2_SME, -1, false), // invalid vector length
         (HWCAP2_SME, 0, false),
         (HWCAP2_SME, 16, false),
         (HWCAP2_SME, 32, false),

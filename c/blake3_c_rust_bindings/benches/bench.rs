@@ -352,6 +352,30 @@ fn bench_many_parents_sme(b: &mut Bencher) {
     }
 }
 
+#[bench]
+#[cfg(feature = "sme")]
+fn bench_many_chunks_sme2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sme::blake3_sme2_supported() } {
+        bench_many_chunks_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sme::blake3_hash_many_sme2,
+            16,
+        );
+    }
+}
+
+#[bench]
+#[cfg(feature = "sme")]
+fn bench_many_parents_sme2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sme::blake3_sme2_supported() } {
+        bench_many_parents_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sme::blake3_hash_many_sme2,
+            16,
+        );
+    }
+}
+
 fn bench_incremental(b: &mut Bencher, len: usize) {
     let mut input = RandomInput::new(b, len);
     b.iter(|| {

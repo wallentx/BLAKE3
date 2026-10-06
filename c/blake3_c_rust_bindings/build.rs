@@ -130,6 +130,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sme_build.flag("-march=armv8-a+sme");
         sme_build.file(c_dir_path("blake3_sme.c"));
         sme_build.compile("blake3_sme");
+        let mut sme2_build = new_build();
+        sme2_build.define("BLAKE3_USE_SME", "1");
+        sme2_build.flag("-march=armv8-a+sme2");
+        sme2_build.file(c_dir_path("blake3_sme2.c"));
+        sme2_build.compile("blake3_sme2");
         // Rust links with -nodefaultlibs. SME's ABI helpers (ZA lazy saving
         // and streaming vector length) must come from the C compiler runtime.
         let compiler = sme_build.get_compiler();

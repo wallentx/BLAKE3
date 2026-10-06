@@ -6,14 +6,13 @@
 
 #if BLAKE3_USE_SME
 #include <sys/auxv.h>
-#include <sys/prctl.h>
 
 // Keep building against older libc headers. These are Linux UAPI values.
 #ifndef HWCAP2_SME
 #define HWCAP2_SME (1UL << 23)
 #endif
-#ifndef PR_SME_GET_VL
-#define PR_SME_GET_VL 64
+#ifndef HWCAP2_SME2
+#define HWCAP2_SME2 (1ULL << 37)
 #endif
 #ifndef PR_SME_VL_LEN_MASK
 #define PR_SME_VL_LEN_MASK 0xffff
@@ -27,16 +26,21 @@ bool sme_supported(unsigned long hwcap2, int vector_length) {
          (vector_length & PR_SME_VL_LEN_MASK) >= 64;
 }
 
-bool blake3_sme_supported(void) {
+static unsigned long get_sme_features(void) {
   unsigned long hwcap2 = getauxval(AT_HWCAP2);
   if (!(hwcap2 & HWCAP2_SME)) {
-    return false;
+    return 0;
   }
   // Streaming vector length is per-thread and can change after startup.
   // Do not cache it, or confuse it with the non-streaming SVE vector length.
-  int vl = prctl(PR_SME_GET_VL, 0, 0, 0, 0);
-  return sme_supported(hwcap2, vl);
+  // RDSVL reads the current thread's length without a syscall or mode switch.
+  int vl = (int)blake3_sme_vector_length();
+  return sme_supported(hwcap2, vl) ? hwcap2 : 0;
 }
+
+bool blake3_sme_supported(void) { return (get_sme_features() & HWCAP2_SME) != 0; }
+
+bool blake3_sme2_supported(void) { return (get_sme_features() & HWCAP2_SME2) != 0; }
 #endif
 
 #if defined(_MSC_VER)
@@ -366,10 +370,18 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
 #endif
 
 #if BLAKE3_USE_SME
-  if (num_inputs >= 16 && blake3_sme_supported()) {
-    blake3_hash_many_sme(inputs, num_inputs, blocks, key, counter,
-                       increment_counter, flags, flags_start, flags_end, out);
-    return;
+  if (num_inputs >= 16) {
+    unsigned long sme_features = get_sme_features();
+    if (sme_features & HWCAP2_SME2) {
+      blake3_hash_many_sme2(inputs, num_inputs, blocks, key, counter,
+                          increment_counter, flags, flags_start, flags_end, out);
+      return;
+    }
+    if (sme_features & HWCAP2_SME) {
+      blake3_hash_many_sme(inputs, num_inputs, blocks, key, counter,
+                         increment_counter, flags, flags_start, flags_end, out);
+      return;
+    }
   }
 #endif
 

@@ -53,7 +53,7 @@ endif
 
 ifeq ($(BLAKE3_USE_SME),1)
 EXTRAFLAGS += -DBLAKE3_USE_SME=1
-TARGETS += blake3_sme.o
+TARGETS += blake3_sme.o blake3_sme2.o
 endif
 
 all: blake3.c blake3_dispatch.c blake3_portable.c main.c $(TARGETS)
@@ -79,6 +79,9 @@ blake3_sve2.o: blake3_sve2.c
 
 blake3_sme.o: blake3_sme.c
 	$(CC) $(CFLAGS) $(EXTRAFLAGS) -march=armv8-a+sme -c $^ -o $@
+
+blake3_sme2.o: blake3_sme2.c
+	$(CC) $(CFLAGS) $(EXTRAFLAGS) -march=armv8-a+sme2 -c $^ -o $@
 
 test: CFLAGS += -DBLAKE3_TESTING -fsanitize=address,undefined
 test: all
