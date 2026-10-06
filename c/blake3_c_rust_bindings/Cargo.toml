@@ -18,6 +18,8 @@ prefer_intrinsics = []
 neon = []
 # Activate SVE2 bindings. Unlike "neon", these do CPU feature detection.
 sve2 = []
+# Experimental Linux/Android AArch64 SME backend, with runtime detection.
+sme = ["neon"]
 # Enable TBB-based multithreading.
 tbb = []
 

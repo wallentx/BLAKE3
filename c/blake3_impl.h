@@ -71,7 +71,18 @@ enum blake3_flags {
   #endif
 #endif
 
+#ifndef BLAKE3_USE_SME
+#define BLAKE3_USE_SME 0
+#endif
+
+#if BLAKE3_USE_SME && \
+    (!defined(IS_AARCH64) || !defined(__linux__) || defined(__ARM_BIG_ENDIAN))
+#error "BLAKE3_USE_SME requires little-endian AArch64 Linux or Android"
+#endif
+
 #if defined(IS_X86)
+#define MAX_SIMD_DEGREE 16
+#elif BLAKE3_USE_SME
 #define MAX_SIMD_DEGREE 16
 #elif BLAKE3_USE_NEON == 1
 #define MAX_SIMD_DEGREE 4
@@ -332,6 +343,15 @@ void blake3_hash_many_sve2(const uint8_t *const *inputs, size_t num_inputs,
                            uint64_t counter, bool increment_counter,
                            uint8_t flags, uint8_t flags_start,
                            uint8_t flags_end, uint8_t *out);
+#endif
+
+#if BLAKE3_USE_SME
+bool blake3_sme_supported(void);
+void blake3_hash_many_sme(const uint8_t *const *inputs, size_t num_inputs,
+                          size_t blocks, const uint32_t key[8],
+                          uint64_t counter, bool increment_counter,
+                          uint8_t flags, uint8_t flags_start,
+                          uint8_t flags_end, uint8_t *out);
 #endif
 
 #ifdef __cplusplus

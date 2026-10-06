@@ -51,6 +51,11 @@ EXTRAFLAGS += -DBLAKE3_USE_SVE2=1
 TARGETS += blake3_sve2.o
 endif
 
+ifeq ($(BLAKE3_USE_SME),1)
+EXTRAFLAGS += -DBLAKE3_USE_SME=1
+TARGETS += blake3_sme.o
+endif
+
 all: blake3.c blake3_dispatch.c blake3_portable.c main.c $(TARGETS)
 	$(CC) $(CFLAGS) $(EXTRAFLAGS) $^ -o $(NAME) $(LDFLAGS)
 
@@ -71,6 +76,9 @@ blake3_neon.o: blake3_neon.c
 
 blake3_sve2.o: blake3_sve2.c
 	$(CC) $(CFLAGS) $(EXTRAFLAGS) -c $^ -o $@ -march=armv8-a+sve2 -msve-vector-bits=128
+
+blake3_sme.o: blake3_sme.c
+	$(CC) $(CFLAGS) $(EXTRAFLAGS) -march=armv8-a+sme -c $^ -o $@
 
 test: CFLAGS += -DBLAKE3_TESTING -fsanitize=address,undefined
 test: all

@@ -273,6 +273,7 @@ The following options are available when compiling with CMake:
 - `BLAKE3_USE_TBB`: Enable oneTBB parallelism (Requires a C++20 capable compiler)
 - `BLAKE3_FETCH_TBB`: Allow fetching oneTBB from GitHub (only if not found on system)
 - `BLAKE3_EXAMPLES`: Compile and install example programs
+- `BLAKE3_USE_SME`: Enable the opt-in AArch64 Linux/Android SME backend
 
 Options can be enabled like this:
 
@@ -386,6 +387,32 @@ gcc -O3 -DBLAKE3_USE_SVE2=1 -march=armv8-a+sve2 -msve-vector-bits=128 \
     -c blake3_sve2.c
 gcc -shared -O3 -o libblake3.so -DBLAKE3_USE_NEON=1 -DBLAKE3_USE_SVE2=1 \
     blake3.c blake3_dispatch.c blake3_portable.c blake3_neon.c blake3_sve2.o
+```
+
+### ARM SME
+
+The SME implementation is opt-in on little-endian AArch64 Linux and Android.
+It uses streaming SVE arithmetic and ZA transposition to hash 16 inputs in
+parallel. It requires base SME, not SME2, and a compiler supporting
+`<arm_sme.h>`, `__arm_locally_streaming`, and `__arm_new("za")` (tested with
+Clang 21).
+
+With CMake, set `BLAKE3_USE_SME=ON`. For manual builds, define
+`BLAKE3_USE_SME=1` and add `blake3_sme.c`, compiling only that source file
+with `-march=armv8-a+sme`. Keep `blake3_neon.c` for fallback.
+
+Dispatch checks SME support and the calling thread's streaming vector length,
+which must be at least 512 bits. Batches smaller than 16 inputs use the existing
+backend. The library does not change or cache the streaming vector length.
+Direct calls to `blake3_hash_many_sme` require `blake3_sme_supported()` to
+succeed on the calling thread. This option applies to the C implementation.
+
+The C bindings expose an `sme` feature for tests and benchmarks:
+
+```sh
+cd c/blake3_c_rust_bindings
+cargo test --features=sme
+cargo +nightly bench --features=sme many_
 ```
 
 ### Other Platforms

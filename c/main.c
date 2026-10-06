@@ -125,11 +125,17 @@ int main(int argc, char **argv) {
     assert(buf_len < buf_capacity);
   }
 
+#if defined(IS_X86)
   const int mask = get_cpu_features();
+#else
+  const int mask = 0;
+#endif
   int feature = 0;
   do {
     fprintf(stderr, "Testing 0x%08X\n", feature);
+#if defined(IS_X86)
     g_cpu_features = feature;
+#endif
     blake3_hasher hasher;
     switch (mode) {
     case HASH_MODE:

@@ -210,14 +210,16 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
     // - u32::MAX: The low word of the counter overflows for all inputs except the first.
     // - i32::MAX: *No* overflow. But carry bugs in tricky SIMD code can screw this up, if you XOR
     //   when you're supposed to ANDNOT...
-    let initial_counters = [0, u32::MAX as u64, i32::MAX as u64];
+    // - u64::MAX: The entire counter wraps after the first input.
+    let initial_counters = [0, u32::MAX as u64, i32::MAX as u64, u64::MAX];
     for counter in initial_counters {
         dbg!(counter);
 
-        // 31 (16 + 8 + 4 + 2 + 1) inputs
-        const NUM_INPUTS: usize = 31;
-        let mut input_buf = [0; CHUNK_LEN * NUM_INPUTS];
+        // Test all batch sizes through two 16-way batches plus a remainder.
+        const NUM_INPUTS: usize = 33;
+        let mut input_buf = [0; CHUNK_LEN * NUM_INPUTS + 1];
         crate::test::paint_test_input(&mut input_buf);
+        let input_buf = &input_buf[1..]; // deliberately misaligned
 
         // First hash chunks.
         let mut chunks = ArrayVec::<&[u8; CHUNK_LEN], NUM_INPUTS>::new();
@@ -244,27 +246,30 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
             );
         }
 
-        let mut test_chunks_out = [0; NUM_INPUTS * OUT_LEN];
-        unsafe {
-            hash_many_fn(
-                chunks.as_ptr() as _,
-                chunks.len(),
-                CHUNK_LEN / BLOCK_LEN,
-                TEST_KEY_WORDS.as_ptr(),
-                counter,
-                true,
-                KEYED_HASH,
-                CHUNK_START,
-                CHUNK_END,
-                test_chunks_out.as_mut_ptr(),
-            );
-        }
-        for n in 0..NUM_INPUTS {
-            dbg!(n);
+        for num_inputs in 0..=NUM_INPUTS {
+            dbg!(num_inputs);
+            let mut test_chunks_out = [0xa5; NUM_INPUTS * OUT_LEN + 2];
+            unsafe {
+                hash_many_fn(
+                    chunks.as_ptr() as _,
+                    num_inputs,
+                    CHUNK_LEN / BLOCK_LEN,
+                    TEST_KEY_WORDS.as_ptr(),
+                    counter,
+                    true,
+                    KEYED_HASH,
+                    CHUNK_START,
+                    CHUNK_END,
+                    test_chunks_out.as_mut_ptr().add(1),
+                );
+            }
+            let end = 1 + num_inputs * OUT_LEN;
             assert_eq!(
-                &portable_chunks_out[n * OUT_LEN..][..OUT_LEN],
-                &test_chunks_out[n * OUT_LEN..][..OUT_LEN]
+                &portable_chunks_out[..num_inputs * OUT_LEN],
+                &test_chunks_out[1..end]
             );
+            assert_eq!(test_chunks_out[0], 0xa5);
+            assert!(test_chunks_out[end..].iter().all(|&b| b == 0xa5));
         }
 
         // Then hash parents.
@@ -292,29 +297,37 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
             );
         }
 
-        let mut test_parents_out = [0; NUM_INPUTS * OUT_LEN];
-        unsafe {
-            hash_many_fn(
-                parents.as_ptr() as _,
-                parents.len(),
-                1,
-                TEST_KEY_WORDS.as_ptr(),
-                counter,
-                false,
-                KEYED_HASH | PARENT,
-                0,
-                0,
-                test_parents_out.as_mut_ptr(),
-            );
-        }
-        for n in 0..NUM_INPUTS {
-            dbg!(n);
+        for num_inputs in 0..=NUM_INPUTS {
+            dbg!(num_inputs);
+            let mut test_parents_out = [0xa5; NUM_INPUTS * OUT_LEN + 2];
+            unsafe {
+                hash_many_fn(
+                    parents.as_ptr() as _,
+                    num_inputs,
+                    1,
+                    TEST_KEY_WORDS.as_ptr(),
+                    counter,
+                    false,
+                    KEYED_HASH | PARENT,
+                    0,
+                    0,
+                    test_parents_out.as_mut_ptr().add(1),
+                );
+            }
+            let end = 1 + num_inputs * OUT_LEN;
             assert_eq!(
-                &portable_parents_out[n * OUT_LEN..][..OUT_LEN],
-                &test_parents_out[n * OUT_LEN..][..OUT_LEN]
+                &portable_parents_out[..num_inputs * OUT_LEN],
+                &test_parents_out[1..end]
             );
+            assert_eq!(test_parents_out[0], 0xa5);
+            assert!(test_parents_out[end..].iter().all(|&b| b == 0xa5));
         }
     }
+}
+
+#[test]
+fn test_hash_many_dispatch() {
+    test_hash_many_fn(crate::ffi::blake3_hash_many);
 }
 
 // Testing the portable implementation against itself is circular, but why not.
@@ -372,6 +385,42 @@ fn test_hash_many_sve2() {
         return;
     }
     test_hash_many_fn(crate::ffi::sve2::blake3_hash_many_sve2);
+}
+
+#[test]
+#[cfg(feature = "sme")]
+fn test_hash_many_sme() {
+    if !unsafe { crate::ffi::sme::blake3_sme_supported() } {
+        return;
+    }
+    test_hash_many_fn(crate::ffi::sme::blake3_hash_many_sme);
+}
+
+#[test]
+#[cfg(feature = "sme")]
+fn test_sme_supported() {
+    const HWCAP2_SME: std::ffi::c_ulong = 1 << 23;
+    let cases = [
+        (0, -1, false),
+        (0, 64, false),
+        (1 << 1, 64, false),     // SVE2 without SME
+        (HWCAP2_SME, -1, false), // failed PR_SME_GET_VL
+        (HWCAP2_SME, 0, false),
+        (HWCAP2_SME, 16, false),
+        (HWCAP2_SME, 32, false),
+        (HWCAP2_SME, 64, true),
+        (HWCAP2_SME, 128, true),
+        (HWCAP2_SME, 256, true),
+        (HWCAP2_SME, (1 << 17) | 32, false), // PR_SME_VL_INHERIT
+        (HWCAP2_SME, (1 << 17) | 64, true),
+    ];
+    for (hwcap2, vector_length, expected) in cases {
+        assert_eq!(
+            unsafe { crate::ffi::sme::sme_supported(hwcap2, vector_length) },
+            expected,
+            "hwcap2={hwcap2:#x}, vector_length={vector_length}"
+        );
+    }
 }
 
 #[allow(unused)]

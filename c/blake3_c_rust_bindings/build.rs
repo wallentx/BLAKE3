@@ -104,6 +104,15 @@ fn c_dir_path(filename: &str) -> String {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut base_build = new_build();
+    if cfg!(feature = "sme") {
+        let os = env::var("CARGO_CFG_TARGET_OS")?;
+        assert!(
+            is_aarch64() && (os == "linux" || os == "android"),
+            "the sme feature requires AArch64 Linux or Android"
+        );
+        base_build.define("BLAKE3_USE_SME", "1");
+        base_build.define("BLAKE3_TESTING", "1");
+    }
     base_build.file(c_dir_path("blake3.c"));
     base_build.file(c_dir_path("blake3_dispatch.c"));
     base_build.file(c_dir_path("blake3_portable.c"));
@@ -114,6 +123,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         base_build.define("BLAKE3_USE_TBB", "1");
     }
     base_build.compile("blake3_base");
+
+    if cfg!(feature = "sme") {
+        let mut sme_build = new_build();
+        sme_build.define("BLAKE3_USE_SME", "1");
+        sme_build.flag("-march=armv8-a+sme");
+        sme_build.file(c_dir_path("blake3_sme.c"));
+        sme_build.compile("blake3_sme");
+        // Rust links with -nodefaultlibs. SME's ABI helpers (ZA lazy saving
+        // and streaming vector length) must come from the C compiler runtime.
+        let compiler = sme_build.get_compiler();
+        let mut command = compiler.to_command();
+        if compiler.is_like_clang() {
+            command.arg("--rtlib=compiler-rt");
+        }
+        let output = command.arg("-print-libgcc-file-name").output()?;
+        assert!(
+            output.status.success(),
+            "cannot locate the SME compiler runtime"
+        );
+        let runtime = String::from_utf8(output.stdout)?;
+        let runtime = std::path::Path::new(runtime.trim());
+        assert!(
+            runtime.is_file(),
+            "SME compiler runtime not found: {}",
+            runtime.display()
+        );
+        println!(
+            "cargo::rustc-link-search=native={}",
+            runtime.parent().unwrap().display()
+        );
+        println!(
+            "cargo::rustc-link-lib=static:+verbatim={}",
+            runtime.file_name().unwrap().to_str().unwrap()
+        );
+    }
 
     if cfg!(feature = "tbb") {
         let mut tbb_build = new_cpp_build();

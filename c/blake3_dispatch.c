@@ -4,6 +4,41 @@
 
 #include "blake3_impl.h"
 
+#if BLAKE3_USE_SME
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+
+// Keep building against older libc headers. These are Linux UAPI values.
+#ifndef HWCAP2_SME
+#define HWCAP2_SME (1UL << 23)
+#endif
+#ifndef PR_SME_GET_VL
+#define PR_SME_GET_VL 64
+#endif
+#ifndef PR_SME_VL_LEN_MASK
+#define PR_SME_VL_LEN_MASK 0xffff
+#endif
+
+#if !defined(BLAKE3_TESTING)
+static
+#endif
+bool sme_supported(unsigned long hwcap2, int vector_length) {
+  return (hwcap2 & HWCAP2_SME) != 0 && vector_length >= 0 &&
+         (vector_length & PR_SME_VL_LEN_MASK) >= 64;
+}
+
+bool blake3_sme_supported(void) {
+  unsigned long hwcap2 = getauxval(AT_HWCAP2);
+  if (!(hwcap2 & HWCAP2_SME)) {
+    return false;
+  }
+  // Streaming vector length is per-thread and can change after startup.
+  // Do not cache it, or confuse it with the non-streaming SVE vector length.
+  int vl = prctl(PR_SME_GET_VL, 0, 0, 0, 0);
+  return sme_supported(hwcap2, vl);
+}
+#endif
+
 #if defined(_MSC_VER)
 #include <Windows.h>
 #endif
@@ -330,6 +365,14 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
 #endif
 #endif
 
+#if BLAKE3_USE_SME
+  if (num_inputs >= 16 && blake3_sme_supported()) {
+    blake3_hash_many_sme(inputs, num_inputs, blocks, key, counter,
+                       increment_counter, flags, flags_start, flags_end, out);
+    return;
+  }
+#endif
+
 #if BLAKE3_USE_SVE2 == 1
   if (get_cpu_features_aarch64() & SVE2) {
     blake3_hash_many_sve2(inputs, num_inputs, blocks, key, counter,
@@ -352,6 +395,11 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
 
 // The dynamically detected SIMD degree of the current platform.
 size_t blake3_simd_degree(void) {
+#if BLAKE3_USE_SME
+  if (blake3_sme_supported()) {
+    return 16;
+  }
+#endif
 #if defined(IS_X86)
   const enum cpu_feature features = get_cpu_features();
   MAYBE_UNUSED(features);
