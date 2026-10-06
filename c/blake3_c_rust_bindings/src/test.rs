@@ -379,12 +379,72 @@ fn test_hash_many_neon() {
 }
 
 #[test]
-#[cfg(all(feature = "sve2", target_arch = "aarch64"))]
+#[cfg(feature = "sve2")]
 fn test_hash_many_sve2() {
-    if !crate::sve2_detected() {
-        return;
+    let supported = unsafe { crate::ffi::sve2::blake3_sve2_supported() };
+    if let Some(expected) = std::env::var_os("BLAKE3_TEST_EXPECT_SVE2") {
+        assert_eq!(expected, if supported { "1" } else { "0" });
     }
-    test_hash_many_fn(crate::ffi::sve2::blake3_hash_many_sve2);
+    if supported {
+        test_hash_many_fn(crate::ffi::sve2::blake3_hash_many_sve2);
+    }
+}
+
+#[test]
+#[cfg(feature = "sve2")]
+fn test_sve2_eligible() {
+    const SVE2: std::ffi::c_ulong = 1 << 1;
+    for hwcap2 in [0, SVE2, 1 << 23, SVE2 | (1 << 23)] {
+        for vector_bytes in [0, 16, 32, 64, 128, 256, usize::MAX] {
+            assert_eq!(
+                unsafe { crate::ffi::sve2::blake3_sve2_eligible(hwcap2, vector_bytes) },
+                hwcap2 & SVE2 != 0 && vector_bytes == 16,
+                "hwcap2={hwcap2:#x}, vector_bytes={vector_bytes}"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "sve2")]
+fn test_sve2_thread_vector_length() {
+    // A dedicated thread keeps VL changes out of other Rust tests. QEMU can
+    // exercise 128 -> 256 -> 128 bits even on fixed-width physical hardware.
+    std::thread::spawn(|| {
+        use std::ffi::{c_int, c_ulong};
+        unsafe extern "C" {
+            fn prctl(option: c_int, ...) -> c_int;
+        }
+        let set_vl =
+            |bytes: c_ulong| unsafe { prctl(50, bytes, 0 as c_ulong, 0 as c_ulong, 0 as c_ulong) };
+        let narrow = set_vl(16);
+        if narrow < 0 {
+            assert_ne!(
+                std::env::var("BLAKE3_TEST_REQUIRE_WIDE_SVE").as_deref(),
+                Ok("1")
+            );
+            return;
+        }
+        // Establish the hardware capability before varying this thread's VL.
+        let hardware_supported = unsafe { crate::ffi::sve2::blake3_sve2_supported() };
+        for requested in [32, 16] {
+            let actual = set_vl(requested);
+            assert!(actual >= 0);
+            let bytes = actual & 0xffff;
+            if requested == 32
+                && std::env::var("BLAKE3_TEST_REQUIRE_WIDE_SVE").as_deref() == Ok("1")
+            {
+                assert_eq!(bytes, 32, "CI must exercise an actual wider SVE length");
+            }
+            assert_eq!(
+                unsafe { crate::ffi::sve2::blake3_sve2_supported() },
+                hardware_supported && bytes == 16
+            );
+            test_hash_many_fn(crate::ffi::blake3_hash_many);
+        }
+    })
+    .join()
+    .unwrap();
 }
 
 #[test]

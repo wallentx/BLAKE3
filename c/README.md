@@ -374,64 +374,79 @@ in call to always_inline ‘vaddq_u32’: target specific option mismatch
 ...then you may need to add something like `-mfpu=neon-vfpv4
 -mfloat-abi=hard`.
 
-### ARM SVE2
+### ARM SVE2 and SME
 
-The SVE2 implementation is off by default, since it needs a compiler with SVE2
-intrinsics. To enable it, set `BLAKE3_USE_SVE2=1`; it is then used at runtime
-when the CPU has SVE2 with a 128-bit vector length, and NEON otherwise. Here's
-an example of building a shared library on AArch64 Linux with SVE2 support,
-where `blake3_sve2.c` needs its own flags:
+These backends are opt-in on little-endian AArch64 Linux and Android. SVE2 uses
+128-bit non-streaming vectors. SME uses streaming vectors and ZA transposition
+to hash 16 inputs in parallel; SME2 reads two transposed vectors per instruction.
+The SVE2 kernel is based on [upstream PR #569] at commit
+`0207198ed57d76bb38d3d8c14be44e57ba324b6b`.
 
-```bash
-gcc -O3 -DBLAKE3_USE_SVE2=1 -march=armv8-a+sve2 -msve-vector-bits=128 \
-    -c blake3_sve2.c
-gcc -shared -O3 -o libblake3.so -DBLAKE3_USE_NEON=1 -DBLAKE3_USE_SVE2=1 \
-    blake3.c blake3_dispatch.c blake3_portable.c blake3_neon.c blake3_sve2.o
-```
+Backend availability and preference are separate build choices:
 
-### ARM SME
+| CMake option | Effect |
+|---|---|
+| `BLAKE3_USE_SVE2=ON` | Build SVE2; prefer it when the current thread is eligible |
+| `BLAKE3_USE_SME=ON` | Build SME and SME2, without automatically preferring them |
+| `BLAKE3_PREFER_SME=ON` | Prefer eligible SME2/SME batches; requires `BLAKE3_USE_SME=ON` |
 
-The SME implementation is opt-in on little-endian AArch64 Linux and Android.
-It uses streaming SVE arithmetic and ZA transposition to hash 16 inputs in
-parallel. On SME2 hardware, a second backend reads two transposed vectors per
-instruction; base SME remains the fallback. Building requires a compiler supporting
-`<arm_sme.h>`, `__arm_locally_streaming`, and `__arm_new("za")` (tested with
-Clang 21).
+All options default to `OFF`. For the combined SVE2-first build, enable both
+`BLAKE3_USE_SVE2` and `BLAKE3_USE_SME`. Add `BLAKE3_PREFER_SME=ON` only when
+SME preference is appropriate for the workload. In particular, shared SME
+execution units can limit parallel hashing even when a single worker benefits.
 
-With CMake, set `BLAKE3_USE_SME=ON`. For manual builds, define
-`BLAKE3_USE_SME=1` and add `blake3_sme.c` and `blake3_sme2.c`, compiling them
-separately with `-march=armv8-a+sme` and `-march=armv8-a+sme2`, respectively.
-Keep `blake3_neon.c` for fallback.
+SVE2 dispatch requires hardware support and a current vector length of exactly
+128 bits. It reads that length with `CNTB`, after checking hardware support.
+SME dispatch requires a streaming length of at least 512 bits and a batch of at
+least 16 inputs; it reads that length with `RDSVL`. Neither length is changed or
+cached across threads. An SME-ineligible batch uses SVE2 when enabled and
+eligible, then NEON/portable fallback. Recursive batches remain 16-wide whenever
+either backend is built, even when different workers choose different backends.
+The preference is fixed at build time; there is no runtime setter or public ABI
+change. Direct backend calls must first check the matching support function on
+the calling thread.
 
-Dispatch checks SME support and the calling thread's streaming vector length,
-which must be at least 512 bits. Batches smaller than 16 inputs use the existing
-backend. The library does not change or cache the streaming vector length.
-It reads that length with `RDSVL`, after checking hardware support.
-Tree batches remain 16-wide across threads, including TBB workers with different
-streaming vector lengths; fallback backends process the same batch sizes.
-Direct calls to `blake3_hash_many_sme` require `blake3_sme_supported()` to
-succeed on the calling thread; the SME2 entry point similarly requires
-`blake3_sme2_supported()`. This option applies to the C implementation.
+For manual builds, define the corresponding macros to `1`, retain the NEON
+fallback, and add these separately compiled sources:
 
-The C bindings expose an `sme` feature for tests and benchmarks:
+| Sources | Compiler flags |
+|---|---|
+| `blake3_sve2.c`, `blake3_sve2_length.c` | `-march=armv8-a+sve2 -msve-vector-bits=128` |
+| `blake3_sme.c` | `-march=armv8-a+sme` |
+| `blake3_sme2.c` | `-march=armv8-a+sme2` |
+
+SME requires compiler support for `<arm_sme.h>`, `__arm_locally_streaming`, and
+`__arm_new("za")`; Clang 21 is tested locally. These options affect the C
+implementation, not the separate native Rust implementation.
+
+The testing-only Rust C bindings expose corresponding features:
 
 ```sh
 cd c/blake3_c_rust_bindings
-cargo test --features=sme
-cargo +nightly bench --features=sme many_
+cargo test --features=sve2,sme
+cargo test --features=sve2,prefer_sme
+cargo +nightly bench --features=sve2,prefer_sme many_
 ```
 
-CI runs these tests under QEMU with SME disabled and with 128-, 256-, 512-,
-1024-, and 2048-bit streaming vectors. `BLAKE3_TEST_EXPECT_SME=1` requires the
-direct SME test to run, while `0` requires fallback. This checks instruction
-execution and dispatch without relying on the runner's hardware features.
-`BLAKE3_TEST_EXPECT_SME2` provides the same assertion for the SME2 backend.
-The matrix also enables TBB and tests a 512-bit caller with a pool initialized
-at 128 bits. The SME-enabled CMake CI-test target is built and run separately.
+`prefer_sme` enables `sme`; both `sve2` and `sme` enable `neon`. Enabling `sme`
+alone tests the direct SME kernels while public dispatch keeps the per-core
+fallback. This differs from the earlier experimental SME-only behavior.
 
-Performance depends on the workload and implementation. In particular, some
-processors share an SME execution unit between cores, so single-thread gains
-do not imply that parallel TBB hashing will scale similarly.
+CI uses the existing seven ARM jobs for both preferences. It asserts expected
+SVE2/SME availability, checks actual SVE length changes (128/256 bits), tests SME
+lengths through 2048 bits, and exercises fallback and TBB. With
+`BLAKE3_TESTING=ON` and both backends built, CMake adds `blake3-arm-dispatch`:
+controlled per-batch eligibility exercises mixed dispatch regardless of worker
+scheduling, checks every digest, repeats on one CPU, and injects a wrong result
+at every loop position to prove failures are caught.
+
+The instrumented test requires native/emulated 128-bit SVE2 and at least
+512-bit SME2. Otherwise it reports a skip. Set
+`BLAKE3_TEST_REQUIRE_ARM_DISPATCH=ON` to require coverage; use
+`BLAKE3_TEST_RUNNER=qemu-aarch64` to run it under QEMU. Simulation in that test is
+complemented by the Rust tests' actual emulator vector-length changes.
+
+[upstream PR #569]: https://github.com/BLAKE3-team/BLAKE3/pull/569
 
 ### Other Platforms
 

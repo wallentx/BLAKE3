@@ -1,3 +1,5 @@
+// Imported from BLAKE3-team/BLAKE3 PR #569, commit
+// 0207198ed57d76bb38d3d8c14be44e57ba324b6b. Runtime VL checks are in dispatch.
 // Port of blake3_neon.c: each xor+rotate pair becomes one SVE2 XAR.
 #include "blake3_impl.h"
 
@@ -205,7 +207,7 @@ INLINE void load_counters4(uint64_t counter, bool increment_counter,
 static void blake3_hash4_sve2(const uint8_t *const *inputs, size_t blocks,
                               const uint32_t key[8], uint64_t counter,
                               bool increment_counter, uint8_t flags,
-                              uint8_t flags_start, uint8_t flags_end, 
+                              uint8_t flags_start, uint8_t flags_end,
                               uint8_t *out) {
   svuint32_4_t h_vecs[8] = {
       set1_128(key[0]), set1_128(key[1]), set1_128(key[2]), set1_128(key[3]),

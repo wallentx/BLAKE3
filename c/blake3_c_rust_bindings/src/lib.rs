@@ -15,21 +15,6 @@ pub const OUT_LEN: usize = 32;
 
 // Feature detection functions for tests and benchmarks. Note that the C code
 // does its own feature detection in blake3_dispatch.c.
-
-// Also needs a 128-bit vector length; see sve2_usable in blake3_dispatch.c.
-#[cfg(all(feature = "sve2", target_arch = "aarch64", target_os = "linux"))]
-pub fn sve2_detected() -> bool {
-    let vl = std::fs::read_to_string("/proc/sys/abi/sve_default_vector_length")
-        .ok()
-        .and_then(|s| s.trim().parse::<usize>().ok());
-    std::arch::is_aarch64_feature_detected!("sve2") && vl == Some(16)
-}
-
-#[cfg(all(feature = "sve2", target_arch = "aarch64", not(target_os = "linux")))]
-pub fn sve2_detected() -> bool {
-    false
-}
-
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn sse2_detected() -> bool {
     is_x86_feature_detected!("sse2")
@@ -340,10 +325,13 @@ pub mod ffi {
         }
     }
 
-    #[cfg(all(feature = "sve2", target_arch = "aarch64"))]
+    #[cfg(feature = "sve2")]
     pub mod sve2 {
         unsafe extern "C" {
-            // SVE2 low level functions
+            #[cfg(test)]
+            pub fn blake3_sve2_eligible(hwcap2: std::ffi::c_ulong, vector_bytes: usize) -> bool;
+            pub fn blake3_sve2_supported() -> bool;
+            // Requires blake3_sve2_supported() on the calling thread.
             pub fn blake3_hash_many_sve2(
                 inputs: *const *const u8,
                 num_inputs: usize,

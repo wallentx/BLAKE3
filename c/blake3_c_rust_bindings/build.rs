@@ -104,25 +104,40 @@ fn c_dir_path(filename: &str) -> String {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut base_build = new_build();
-    if cfg!(feature = "sme") {
+    if cfg!(any(feature = "sme", feature = "sve2")) {
         let os = env::var("CARGO_CFG_TARGET_OS")?;
         assert!(
             is_aarch64() && (os == "linux" || os == "android"),
-            "the sme feature requires AArch64 Linux or Android"
+            "the sve2 and sme features require AArch64 Linux or Android"
         );
-        base_build.define("BLAKE3_USE_SME", "1");
         base_build.define("BLAKE3_TESTING", "1");
+    }
+    if cfg!(feature = "sme") {
+        base_build.define("BLAKE3_USE_SME", "1");
+    }
+    if cfg!(feature = "sve2") {
+        base_build.define("BLAKE3_USE_SVE2", "1");
+    }
+    if cfg!(feature = "prefer_sme") {
+        base_build.define("BLAKE3_PREFER_SME", "1");
     }
     base_build.file(c_dir_path("blake3.c"));
     base_build.file(c_dir_path("blake3_dispatch.c"));
     base_build.file(c_dir_path("blake3_portable.c"));
-    if defined("CARGO_FEATURE_SVE2") && is_aarch64() {
-        base_build.define("BLAKE3_USE_SVE2", "1");
-    }
     if cfg!(feature = "tbb") {
         base_build.define("BLAKE3_USE_TBB", "1");
     }
     base_build.compile("blake3_base");
+
+    if cfg!(feature = "sve2") {
+        let mut sve2_build = new_build();
+        sve2_build.define("BLAKE3_USE_SVE2", "1");
+        sve2_build.flag("-march=armv8-a+sve2");
+        sve2_build.flag("-msve-vector-bits=128");
+        sve2_build.file(c_dir_path("blake3_sve2.c"));
+        sve2_build.file(c_dir_path("blake3_sve2_length.c"));
+        sve2_build.compile("blake3_sve2");
+    }
 
     if cfg!(feature = "sme") {
         let mut sme_build = new_build();
@@ -273,18 +288,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             neon_build.flag("-mfloat-abi=hard");
         }
         neon_build.compile("blake3_neon");
-    }
-
-    // BLAKE3_USE_SVE2 must also reach base_build above, or blake3_dispatch.c
-    // never calls this.
-    if defined("CARGO_FEATURE_SVE2") && is_aarch64() {
-        let mut sve2_build = new_build();
-        sve2_build.file(c_dir_path("blake3_sve2.c"));
-        sve2_build.define("BLAKE3_USE_SVE2", "1");
-        // armv8-a+sve2 rather than armv9-a, which needs GCC 12.
-        sve2_build.flag("-march=armv8-a+sve2");
-        sve2_build.flag("-msve-vector-bits=128");
-        sve2_build.compile("blake3_sve2");
     }
 
     // The `cc` crate does not automatically emit rerun-if directives for the

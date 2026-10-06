@@ -199,19 +199,6 @@ fn bench_many_chunks_avx512(b: &mut Bencher) {
 }
 
 #[bench]
-#[cfg(all(feature = "sve2", target_arch = "aarch64"))]
-fn bench_many_chunks_sve2(b: &mut Bencher) {
-    if !blake3_c_rust_bindings::sve2_detected() {
-        return;
-    }
-    bench_many_chunks_fn(
-        b,
-        blake3_c_rust_bindings::ffi::sve2::blake3_hash_many_sve2,
-        4,
-    );
-}
-
-#[bench]
 #[cfg(feature = "neon")]
 fn bench_many_chunks_neon(b: &mut Bencher) {
     // When "neon" is on, NEON support is assumed.
@@ -305,19 +292,6 @@ fn bench_many_parents_avx512(b: &mut Bencher) {
 }
 
 #[bench]
-#[cfg(all(feature = "sve2", target_arch = "aarch64"))]
-fn bench_many_parents_sve2(b: &mut Bencher) {
-    if !blake3_c_rust_bindings::sve2_detected() {
-        return;
-    }
-    bench_many_parents_fn(
-        b,
-        blake3_c_rust_bindings::ffi::sve2::blake3_hash_many_sve2,
-        4,
-    );
-}
-
-#[bench]
 #[cfg(feature = "neon")]
 fn bench_many_parents_neon(b: &mut Bencher) {
     // When "neon" is on, NEON support is assumed.
@@ -326,6 +300,30 @@ fn bench_many_parents_neon(b: &mut Bencher) {
         blake3_c_rust_bindings::ffi::neon::blake3_hash_many_neon,
         4,
     );
+}
+
+#[bench]
+#[cfg(feature = "sve2")]
+fn bench_many_chunks_sve2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sve2::blake3_sve2_supported() } {
+        bench_many_chunks_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sve2::blake3_hash_many_sve2,
+            4,
+        );
+    }
+}
+
+#[bench]
+#[cfg(feature = "sve2")]
+fn bench_many_parents_sve2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sve2::blake3_sve2_supported() } {
+        bench_many_parents_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sve2::blake3_hash_many_sve2,
+            4,
+        );
+    }
 }
 
 #[bench]

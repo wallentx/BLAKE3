@@ -4,10 +4,13 @@
 
 #include "blake3_impl.h"
 
-#if BLAKE3_USE_SME
+#if BLAKE3_USE_SME || BLAKE3_USE_SVE2
 #include <sys/auxv.h>
 
 // Keep building against older libc headers. These are Linux UAPI values.
+#ifndef HWCAP2_SVE2
+#define HWCAP2_SVE2 (1UL << 1)
+#endif
 #ifndef HWCAP2_SME
 #define HWCAP2_SME (1UL << 23)
 #endif
@@ -17,6 +20,27 @@
 #ifndef PR_SME_VL_LEN_MASK
 #define PR_SME_VL_LEN_MASK 0xffff
 #endif
+#endif
+
+#if BLAKE3_USE_SVE2
+#if !defined(BLAKE3_TESTING)
+static
+#endif
+bool blake3_sve2_eligible(unsigned long hwcap2, size_t vector_bytes) {
+  return (hwcap2 & HWCAP2_SVE2) != 0 && vector_bytes == 16;
+}
+
+bool blake3_sve2_supported(void) {
+  unsigned long hwcap2 = getauxval(AT_HWCAP2);
+  // Check hardware support before executing CNTB. The fixed-width kernel
+  // requires exactly 128 bits; vector length is per-thread and must not be
+  // cached process-wide or inferred from fixed-width svcntb().
+  return (hwcap2 & HWCAP2_SVE2) &&
+         blake3_sve2_eligible(hwcap2, blake3_sve2_vector_length());
+}
+#endif
+
+#if BLAKE3_USE_SME
 
 #if !defined(BLAKE3_TESTING)
 static
@@ -54,21 +78,6 @@ bool blake3_sme2_supported(void) { return (get_sme_features() & HWCAP2_SME2) != 
 #include <immintrin.h>
 #else
 #undef IS_X86 /* Unimplemented! */
-#endif
-#endif
-
-#if BLAKE3_USE_SVE2 == 1
-#if defined(IS_AARCH64) && defined(__linux__)
-#include <sys/auxv.h>
-#include <sys/prctl.h>
-#include <asm/hwcap.h>
-#ifndef HWCAP2_SVE2
-#define HWCAP2_SVE2 (1 << 1)
-#endif
-#else
-/* No runtime detection on this platform. */
-#undef BLAKE3_USE_SVE2
-#define BLAKE3_USE_SVE2 0
 #endif
 #endif
 
@@ -219,33 +228,6 @@ static
 }
 #endif
 
-#if BLAKE3_USE_SVE2 == 1
-enum cpu_feature_aarch64 {
-  SVE2 = 1 << 0,
-  /* ... */
-  UNDEFINED_AARCH64 = 1 << 30
-};
-
-static ATOMIC_INT g_cpu_features_aarch64 = UNDEFINED_AARCH64;
-
-static enum cpu_feature_aarch64 get_cpu_features_aarch64(void) {
-  enum cpu_feature_aarch64 features = ATOMIC_LOAD(g_cpu_features_aarch64);
-  if (features != UNDEFINED_AARCH64) {
-    return features;
-  }
-  /* blake3_sve2.c is built with -msve-vector-bits=128, so it needs SVE2 and a
-     128-bit vector length. Checked here because under that flag the compiler
-     folds svcntb() to 16, so a check in that file would always pass. */
-  features = 0;
-  if ((getauxval(AT_HWCAP2) & HWCAP2_SVE2) != 0 &&
-      (prctl(PR_SVE_GET_VL, 0, 0, 0, 0) & PR_SVE_VL_LEN_MASK) == 16) {
-    features |= SVE2;
-  }
-  ATOMIC_STORE(g_cpu_features_aarch64, features);
-  return features;
-}
-#endif
-
 void blake3_compress_in_place(uint32_t cv[8],
                               const uint8_t block[BLAKE3_BLOCK_LEN],
                               uint8_t block_len, uint64_t counter,
@@ -369,7 +351,7 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
 #endif
 #endif
 
-#if BLAKE3_USE_SME
+#if BLAKE3_USE_SME && BLAKE3_PREFER_SME
   if (num_inputs >= 16) {
     unsigned long sme_features = get_sme_features();
     if (sme_features & HWCAP2_SME2) {
@@ -385,11 +367,10 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
   }
 #endif
 
-#if BLAKE3_USE_SVE2 == 1
-  if (get_cpu_features_aarch64() & SVE2) {
+#if BLAKE3_USE_SVE2
+  if (blake3_sve2_supported()) {
     blake3_hash_many_sve2(inputs, num_inputs, blocks, key, counter,
-                          increment_counter, flags, flags_start, flags_end,
-                          out);
+                         increment_counter, flags, flags_start, flags_end, out);
     return;
   }
 #endif
@@ -407,7 +388,7 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
 
 // The batching degree used to lay out recursive subtree outputs.
 size_t blake3_simd_degree(void) {
-#if BLAKE3_USE_SME
+#if BLAKE3_USE_SME || BLAKE3_USE_SVE2
   // TBB workers can have different streaming vector lengths. Keep their
   // output layouts identical; hash_many selects a safe backend per thread
   // and the fallback implementations can process the same 16-input batches.

@@ -124,6 +124,11 @@ elseif(BLAKE3_SIMD_TYPE STREQUAL "none")
 
 endif()
 
+if(BLAKE3_USE_SVE2)
+  target_sources(blake3-testing PRIVATE blake3_sve2.c blake3_sve2_length.c)
+  set_source_files_properties(blake3_sve2.c blake3_sve2_length.c
+    PROPERTIES COMPILE_FLAGS "${BLAKE3_CFLAGS_SVE2}")
+endif()
 if(BLAKE3_USE_SME)
   target_sources(blake3-testing PRIVATE blake3_sme.c blake3_sme2.c)
   set_source_files_properties(blake3_sme.c PROPERTIES COMPILE_FLAGS "${BLAKE3_CFLAGS_SME}")
@@ -231,7 +236,13 @@ add_test(NAME blake3-testing
       "-DBLAKE3_TESTING=${BLAKE3_TESTING}"
       "-DBLAKE3_TESTING_CI=${BLAKE3_TESTING_CI}"
       "-DBLAKE3_USE_TBB=${BLAKE3_USE_TBB}"
+      "-DTBB_DIR=${TBB_DIR}"
       "-DBLAKE3_USE_SME=${BLAKE3_USE_SME}"
+      "-DBLAKE3_USE_SVE2=${BLAKE3_USE_SVE2}"
+      "-DBLAKE3_PREFER_SME=${BLAKE3_PREFER_SME}"
+      "-DBLAKE3_CFLAGS_SVE2=${BLAKE3_CFLAGS_SVE2}"
+      "-DBLAKE3_TEST_RUNNER=${BLAKE3_TEST_RUNNER}"
+      "-DBLAKE3_TEST_REQUIRE_ARM_DISPATCH=${BLAKE3_TEST_REQUIRE_ARM_DISPATCH}"
       "-DBLAKE3_CFLAGS_SME=${BLAKE3_CFLAGS_SME}"
       "-DBLAKE3_CFLAGS_SME2=${BLAKE3_CFLAGS_SME2}"
       "-DBLAKE3_SIMD_TYPE=${BLAKE3_SIMD_TYPE}"
