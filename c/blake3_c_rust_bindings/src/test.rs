@@ -210,14 +210,16 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
     // - u32::MAX: The low word of the counter overflows for all inputs except the first.
     // - i32::MAX: *No* overflow. But carry bugs in tricky SIMD code can screw this up, if you XOR
     //   when you're supposed to ANDNOT...
-    let initial_counters = [0, u32::MAX as u64, i32::MAX as u64];
+    // - u64::MAX: The entire counter wraps after the first input.
+    let initial_counters = [0, u32::MAX as u64, i32::MAX as u64, u64::MAX];
     for counter in initial_counters {
         dbg!(counter);
 
-        // 31 (16 + 8 + 4 + 2 + 1) inputs
-        const NUM_INPUTS: usize = 31;
-        let mut input_buf = [0; CHUNK_LEN * NUM_INPUTS];
+        // Test all batch sizes through two 16-way batches plus a remainder.
+        const NUM_INPUTS: usize = 33;
+        let mut input_buf = [0; CHUNK_LEN * NUM_INPUTS + 1];
         crate::test::paint_test_input(&mut input_buf);
+        let input_buf = &input_buf[1..]; // deliberately misaligned
 
         // First hash chunks.
         let mut chunks = ArrayVec::<&[u8; CHUNK_LEN], NUM_INPUTS>::new();
@@ -244,27 +246,30 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
             );
         }
 
-        let mut test_chunks_out = [0; NUM_INPUTS * OUT_LEN];
-        unsafe {
-            hash_many_fn(
-                chunks.as_ptr() as _,
-                chunks.len(),
-                CHUNK_LEN / BLOCK_LEN,
-                TEST_KEY_WORDS.as_ptr(),
-                counter,
-                true,
-                KEYED_HASH,
-                CHUNK_START,
-                CHUNK_END,
-                test_chunks_out.as_mut_ptr(),
-            );
-        }
-        for n in 0..NUM_INPUTS {
-            dbg!(n);
+        for num_inputs in 0..=NUM_INPUTS {
+            dbg!(num_inputs);
+            let mut test_chunks_out = [0xa5; NUM_INPUTS * OUT_LEN + 2];
+            unsafe {
+                hash_many_fn(
+                    chunks.as_ptr() as _,
+                    num_inputs,
+                    CHUNK_LEN / BLOCK_LEN,
+                    TEST_KEY_WORDS.as_ptr(),
+                    counter,
+                    true,
+                    KEYED_HASH,
+                    CHUNK_START,
+                    CHUNK_END,
+                    test_chunks_out.as_mut_ptr().add(1),
+                );
+            }
+            let end = 1 + num_inputs * OUT_LEN;
             assert_eq!(
-                &portable_chunks_out[n * OUT_LEN..][..OUT_LEN],
-                &test_chunks_out[n * OUT_LEN..][..OUT_LEN]
+                &portable_chunks_out[..num_inputs * OUT_LEN],
+                &test_chunks_out[1..end]
             );
+            assert_eq!(test_chunks_out[0], 0xa5);
+            assert!(test_chunks_out[end..].iter().all(|&b| b == 0xa5));
         }
 
         // Then hash parents.
@@ -292,29 +297,37 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
             );
         }
 
-        let mut test_parents_out = [0; NUM_INPUTS * OUT_LEN];
-        unsafe {
-            hash_many_fn(
-                parents.as_ptr() as _,
-                parents.len(),
-                1,
-                TEST_KEY_WORDS.as_ptr(),
-                counter,
-                false,
-                KEYED_HASH | PARENT,
-                0,
-                0,
-                test_parents_out.as_mut_ptr(),
-            );
-        }
-        for n in 0..NUM_INPUTS {
-            dbg!(n);
+        for num_inputs in 0..=NUM_INPUTS {
+            dbg!(num_inputs);
+            let mut test_parents_out = [0xa5; NUM_INPUTS * OUT_LEN + 2];
+            unsafe {
+                hash_many_fn(
+                    parents.as_ptr() as _,
+                    num_inputs,
+                    1,
+                    TEST_KEY_WORDS.as_ptr(),
+                    counter,
+                    false,
+                    KEYED_HASH | PARENT,
+                    0,
+                    0,
+                    test_parents_out.as_mut_ptr().add(1),
+                );
+            }
+            let end = 1 + num_inputs * OUT_LEN;
             assert_eq!(
-                &portable_parents_out[n * OUT_LEN..][..OUT_LEN],
-                &test_parents_out[n * OUT_LEN..][..OUT_LEN]
+                &portable_parents_out[..num_inputs * OUT_LEN],
+                &test_parents_out[1..end]
             );
+            assert_eq!(test_parents_out[0], 0xa5);
+            assert!(test_parents_out[end..].iter().all(|&b| b == 0xa5));
         }
     }
+}
+
+#[test]
+fn test_hash_many_dispatch() {
+    test_hash_many_fn(crate::ffi::blake3_hash_many);
 }
 
 // Testing the portable implementation against itself is circular, but why not.
@@ -363,6 +376,183 @@ fn test_hash_many_avx512() {
 #[cfg(feature = "neon")]
 fn test_hash_many_neon() {
     test_hash_many_fn(crate::ffi::neon::blake3_hash_many_neon);
+}
+
+#[test]
+#[cfg(feature = "sve2")]
+fn test_hash_many_sve2() {
+    let supported = unsafe { crate::ffi::sve2::blake3_sve2_supported() };
+    if let Some(expected) = std::env::var_os("BLAKE3_TEST_EXPECT_SVE2") {
+        assert_eq!(expected, if supported { "1" } else { "0" });
+    }
+    if supported {
+        test_hash_many_fn(crate::ffi::sve2::blake3_hash_many_sve2);
+    }
+}
+
+#[test]
+#[cfg(feature = "sve2")]
+fn test_sve2_eligible() {
+    const SVE2: std::ffi::c_ulong = 1 << 1;
+    for hwcap2 in [0, SVE2, 1 << 23, SVE2 | (1 << 23)] {
+        for vector_bytes in [0, 16, 32, 64, 128, 256, usize::MAX] {
+            assert_eq!(
+                unsafe { crate::ffi::sve2::blake3_sve2_eligible(hwcap2, vector_bytes) },
+                hwcap2 & SVE2 != 0 && vector_bytes == 16,
+                "hwcap2={hwcap2:#x}, vector_bytes={vector_bytes}"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "sve2")]
+fn test_sve2_thread_vector_length() {
+    // A dedicated thread keeps VL changes out of other Rust tests. QEMU can
+    // exercise 128 -> 256 -> 128 bits even on fixed-width physical hardware.
+    std::thread::spawn(|| {
+        use std::ffi::{c_int, c_ulong};
+        unsafe extern "C" {
+            fn prctl(option: c_int, ...) -> c_int;
+        }
+        let set_vl =
+            |bytes: c_ulong| unsafe { prctl(50, bytes, 0 as c_ulong, 0 as c_ulong, 0 as c_ulong) };
+        let narrow = set_vl(16);
+        if narrow < 0 {
+            assert_ne!(
+                std::env::var("BLAKE3_TEST_REQUIRE_WIDE_SVE").as_deref(),
+                Ok("1")
+            );
+            return;
+        }
+        // Establish the hardware capability before varying this thread's VL.
+        let hardware_supported = unsafe { crate::ffi::sve2::blake3_sve2_supported() };
+        for requested in [32, 16] {
+            let actual = set_vl(requested);
+            assert!(actual >= 0);
+            let bytes = actual & 0xffff;
+            if requested == 32
+                && std::env::var("BLAKE3_TEST_REQUIRE_WIDE_SVE").as_deref() == Ok("1")
+            {
+                assert_eq!(bytes, 32, "CI must exercise an actual wider SVE length");
+            }
+            assert_eq!(
+                unsafe { crate::ffi::sve2::blake3_sve2_supported() },
+                hardware_supported && bytes == 16
+            );
+            test_hash_many_fn(crate::ffi::blake3_hash_many);
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+#[cfg(feature = "sme")]
+fn test_hash_many_sme() {
+    let supported = unsafe { crate::ffi::sme::blake3_sme_supported() };
+    // CI must not silently skip the backend when its emulator is misconfigured.
+    if let Some(expected) = std::env::var_os("BLAKE3_TEST_EXPECT_SME") {
+        assert_eq!(expected, if supported { "1" } else { "0" });
+    }
+    if !supported {
+        return;
+    }
+    test_hash_many_fn(crate::ffi::sme::blake3_hash_many_sme);
+}
+
+#[test]
+#[cfg(feature = "sme")]
+fn test_hash_many_sme2() {
+    let supported = unsafe { crate::ffi::sme::blake3_sme2_supported() };
+    if let Some(expected) = std::env::var_os("BLAKE3_TEST_EXPECT_SME2") {
+        assert_eq!(expected, if supported { "1" } else { "0" });
+    }
+    if !supported {
+        return;
+    }
+    test_hash_many_fn(crate::ffi::sme::blake3_hash_many_sme2);
+}
+
+#[test]
+#[cfg(feature = "sme")]
+fn test_sme_supported() {
+    const HWCAP2_SME: std::ffi::c_ulong = 1 << 23;
+    let cases = [
+        (0, -1, false),
+        (0, 64, false),
+        (1 << 1, 64, false),     // SVE2 without SME
+        (HWCAP2_SME, -1, false), // invalid vector length
+        (HWCAP2_SME, 0, false),
+        (HWCAP2_SME, 16, false),
+        (HWCAP2_SME, 32, false),
+        (HWCAP2_SME, 64, true),
+        (HWCAP2_SME, 128, true),
+        (HWCAP2_SME, 256, true),
+        (HWCAP2_SME, (1 << 17) | 32, false), // PR_SME_VL_INHERIT
+        (HWCAP2_SME, (1 << 17) | 64, true),
+    ];
+    for (hwcap2, vector_length, expected) in cases {
+        assert_eq!(
+            unsafe { crate::ffi::sme::sme_supported(hwcap2, vector_length) },
+            expected,
+            "hwcap2={hwcap2:#x}, vector_length={vector_length}"
+        );
+    }
+}
+
+#[test]
+#[cfg(all(feature = "sme", feature = "tbb"))]
+fn test_tbb_sme_mixed_vector_lengths() {
+    // Change only a dedicated thread's VL. The TBB pool is warmed at the
+    // shorter length before the calling thread switches to the wider length.
+    std::thread::spawn(|| {
+        use std::ffi::{c_int, c_ulong};
+        unsafe extern "C" {
+            fn prctl(option: c_int, ...) -> c_int;
+        }
+        const PR_SME_SET_VL: c_int = 63;
+        let set_vl = |len: c_ulong| unsafe {
+            prctl(PR_SME_SET_VL, len, 0 as c_ulong, 0 as c_ulong, 0 as c_ulong)
+        };
+        let short = set_vl(16);
+        let wide = set_vl(64);
+        let can_change = short == 16 && wide == 64;
+        if std::env::var("BLAKE3_TEST_REQUIRE_MIXED_SME").as_deref() == Ok("1") {
+            assert!(
+                can_change,
+                "mixed-width test requires both 128- and 512-bit SME"
+            );
+        }
+        if !can_change {
+            return;
+        }
+
+        let mut input = vec![0; 1024 * CHUNK_LEN];
+        paint_test_input(&mut input);
+        let mut reference_hasher = reference_impl::Hasher::new();
+        reference_hasher.update(&input);
+        let mut expected = [0; 303];
+        reference_hasher.finalize(&mut expected);
+
+        assert_eq!(set_vl(16), 16);
+        let mut warmup = crate::Hasher::new();
+        warmup.update_tbb(&input);
+        let mut output = [0; 303];
+        warmup.finalize(&mut output);
+        assert_eq!(expected, output);
+
+        assert_eq!(set_vl(64), 64);
+        assert!(unsafe { crate::ffi::sme::blake3_sme_supported() });
+        for _ in 0..4 {
+            let mut hasher = crate::Hasher::new();
+            hasher.update_tbb(&input);
+            hasher.finalize(&mut output);
+            assert_eq!(expected, output);
+        }
+    })
+    .join()
+    .unwrap();
 }
 
 #[allow(unused)]

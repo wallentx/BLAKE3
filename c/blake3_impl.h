@@ -71,7 +71,30 @@ enum blake3_flags {
   #endif
 #endif
 
+#ifndef BLAKE3_USE_SME
+#define BLAKE3_USE_SME 0
+#endif
+
+#ifndef BLAKE3_USE_SVE2
+#define BLAKE3_USE_SVE2 0
+#endif
+
+#ifndef BLAKE3_PREFER_SME
+#define BLAKE3_PREFER_SME 0
+#endif
+
+#if BLAKE3_PREFER_SME && !BLAKE3_USE_SME
+#error "BLAKE3_PREFER_SME requires BLAKE3_USE_SME"
+#endif
+
+#if (BLAKE3_USE_SME || BLAKE3_USE_SVE2) && \
+    (!defined(IS_AARCH64) || !defined(__linux__) || defined(__ARM_BIG_ENDIAN))
+#error "SVE2/SME backends require little-endian AArch64 Linux or Android"
+#endif
+
 #if defined(IS_X86)
+#define MAX_SIMD_DEGREE 16
+#elif BLAKE3_USE_SME || BLAKE3_USE_SVE2
 #define MAX_SIMD_DEGREE 16
 #elif BLAKE3_USE_NEON == 1
 #define MAX_SIMD_DEGREE 4
@@ -324,6 +347,35 @@ void blake3_hash_many_neon(const uint8_t *const *inputs, size_t num_inputs,
                            uint64_t counter, bool increment_counter,
                            uint8_t flags, uint8_t flags_start,
                            uint8_t flags_end, uint8_t *out);
+#endif
+
+#if BLAKE3_USE_SVE2
+size_t blake3_sve2_vector_length(void);
+bool blake3_sve2_supported(void);
+#if defined(BLAKE3_TESTING)
+bool blake3_sve2_eligible(unsigned long hwcap2, size_t vector_bytes);
+#endif
+// Call only when blake3_sve2_supported() succeeds on the calling thread.
+void blake3_hash_many_sve2(const uint8_t *const *inputs, size_t num_inputs,
+                         size_t blocks, const uint32_t key[8], uint64_t counter,
+                         bool increment_counter, uint8_t flags,
+                         uint8_t flags_start, uint8_t flags_end, uint8_t *out);
+#endif
+
+#if BLAKE3_USE_SME
+size_t blake3_sme_vector_length(void);
+bool blake3_sme_supported(void);
+bool blake3_sme2_supported(void);
+void blake3_hash_many_sme(const uint8_t *const *inputs, size_t num_inputs,
+                          size_t blocks, const uint32_t key[8],
+                          uint64_t counter, bool increment_counter,
+                          uint8_t flags, uint8_t flags_start,
+                          uint8_t flags_end, uint8_t *out);
+void blake3_hash_many_sme2(const uint8_t *const *inputs, size_t num_inputs,
+                         size_t blocks, const uint32_t key[8],
+                         uint64_t counter, bool increment_counter,
+                         uint8_t flags, uint8_t flags_start,
+                         uint8_t flags_end, uint8_t *out);
 #endif
 
 #ifdef __cplusplus

@@ -235,6 +235,95 @@ jobs:
     - run: ./c/blake3_c_rust_bindings/cross_test.sh --target ${{ matrix.arch }} --features=neon
       if: startsWith(matrix.arch, 'armv7-') || startsWith(matrix.arch, 'aarch64-')
 
+  sme_tests:
+    name: C bindings SME (${{ matrix.name }})
+    runs-on: ubuntu-26.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: disabled
+            cpu: max,sme=off,sve=off
+            expected: "0"
+            expected_sve2: "0"
+          - name: 128-bit fallback
+            cpu: max,sme128=on,sme-default-vector-length=16,sve-default-vector-length=16
+            expected: "0"
+            expected_sve2: "1"
+          - name: 256-bit fallback
+            cpu: max,sme256=on,sme-default-vector-length=32,sve-default-vector-length=32
+            expected: "0"
+            expected_sve2: "0"
+          - name: 512-bit
+            cpu: max,sme512=on,sme-default-vector-length=64,sve-default-vector-length=16
+            expected: "1"
+            expected_sve2: "1"
+          - name: 1024-bit
+            cpu: max,sme1024=on,sme-default-vector-length=128,sve-default-vector-length=16
+            expected: "1"
+            expected_sve2: "1"
+          - name: 2048-bit
+            cpu: max,sme2048=on,sme-default-vector-length=256,sve-default-vector-length=16
+            expected: "1"
+            expected_sve2: "1"
+          - name: mixed TBB widths
+            cpu: max,sme128=on,sme512=on,sme-default-vector-length=16,sve-default-vector-length=16
+            expected: "0"
+            expected_sve2: "1"
+            require_mixed: "1"
+    env:
+      CC: clang-22
+      CXX: clang++-22
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64
+      QEMU_CPU: ${{ matrix.cpu }}
+      BLAKE3_TEST_EXPECT_SME: ${{ matrix.expected }}
+      BLAKE3_TEST_EXPECT_SME2: ${{ matrix.expected }}
+      BLAKE3_TEST_EXPECT_SVE2: ${{ matrix.expected_sve2 }}
+      BLAKE3_TEST_REQUIRE_WIDE_SVE: ${{ matrix.name != 'disabled' && '1' || '0' }}
+      BLAKE3_TEST_REQUIRE_MIXED_SME: ${{ matrix.require_mixed || '0' }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - name: install SME test tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-22 libclang-rt-22-dev libtbb-dev qemu-user
+        clang-22 --version
+        qemu-aarch64 --version
+    - name: cargo test C bindings SME on the native ARM runner
+      if: matrix.name == '512-bit'
+      run: |
+        lscpu
+        env -u CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER -u BLAKE3_TEST_EXPECT_SME -u BLAKE3_TEST_EXPECT_SME2 \
+          -u BLAKE3_TEST_EXPECT_SVE2 -u BLAKE3_TEST_REQUIRE_WIDE_SVE -u QEMU_CPU \
+          cargo test --target=aarch64-unknown-linux-gnu --features=sve2,sme,tbb
+      working-directory: ./c/blake3_c_rust_bindings
+    - name: cargo test C bindings SVE2-first and SME preference
+      run: |
+        cargo test --target=aarch64-unknown-linux-gnu --features=sve2,sme,tbb
+        cargo test --target=aarch64-unknown-linux-gnu --features=sve2,prefer_sme,tbb
+      working-directory: ./c/blake3_c_rust_bindings
+    - name: cargo test C bindings release and benches for both preferences
+      run: |
+        cargo test --target=aarch64-unknown-linux-gnu --features=sve2,sme,tbb --release --benches
+        cargo test --target=aarch64-unknown-linux-gnu --features=sve2,prefer_sme,tbb --release --benches
+      working-directory: ./c/blake3_c_rust_bindings
+      env:
+        RUSTC_BOOTSTRAP: 1
+
+    - name: CMake vectors and deterministic dispatch regressions
+      if: matrix.name == '512-bit'
+      run: |
+        for prefer in OFF ON; do
+          build="c/build-arm-$prefer"
+          cmake -S c -B "$build" -DBLAKE3_TESTING=ON -DBLAKE3_TESTING_CI=ON \
+            -DBLAKE3_USE_SVE2=ON -DBLAKE3_USE_SME=ON -DBLAKE3_USE_TBB=ON \
+            -DBLAKE3_PREFER_SME="$prefer" -DBLAKE3_TEST_RUNNER=qemu-aarch64 \
+            -DBLAKE3_TEST_REQUIRE_ARM_DISPATCH=ON
+          cmake --build "$build" --parallel 2
+          ctest --test-dir "$build" --output-on-failure
+        done
+
   wasm_tests:
     name: WASM tests
     runs-on: ubuntu-latest

@@ -19,6 +19,9 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(BLAKE3_USE_TBB "Enable oneTBB parallelism" OFF)
 option(BLAKE3_FETCH_TBB "Allow fetching oneTBB from GitHub if not found on system" OFF)
+option(BLAKE3_USE_SME "Enable experimental AArch64 Linux/Android SME backend" OFF)
+option(BLAKE3_USE_SVE2 "Enable experimental AArch64 Linux/Android SVE2 backend" OFF)
+option(BLAKE3_PREFER_SME "Prefer eligible SME/SME2 batches over SVE2/NEON" OFF)
 
 include(CTest)
 include(FeatureSummary)
@@ -61,6 +64,10 @@ elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU"
   set(BLAKE3_CFLAGS_AVX2 "-mavx2" CACHE STRING "the compiler flags to enable AVX2")
   set(BLAKE3_CFLAGS_AVX512 "-mavx512f -mavx512vl" CACHE STRING "the compiler flags to enable AVX512")
 
+  set(BLAKE3_CFLAGS_SME "-march=armv8-a+sme" CACHE STRING "the compiler flags to enable SME")
+  set(BLAKE3_CFLAGS_SME2 "-march=armv8-a+sme2" CACHE STRING "the compiler flags to enable SME2")
+  set(BLAKE3_CFLAGS_SVE2 "-march=armv8-a+sve2 -msve-vector-bits=128" CACHE STRING "the compiler flags for the fixed-width SVE2 backend")
+
   if (WIN32 OR CYGWIN)
     set(BLAKE3_AMD64_ASM_SOURCES
       blake3_avx2_x86-64_windows_gnu.S
@@ -86,6 +93,7 @@ elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU"
 endif()
 
 mark_as_advanced(BLAKE3_CFLAGS_SSE2 BLAKE3_CFLAGS_SSE4.1 BLAKE3_CFLAGS_AVX2 BLAKE3_CFLAGS_AVX512 BLAKE3_CFLAGS_NEON)
+mark_as_advanced(BLAKE3_CFLAGS_SME BLAKE3_CFLAGS_SME2 BLAKE3_CFLAGS_SVE2)
 mark_as_advanced(BLAKE3_AMD64_ASM_SOURCES)
 
 message(STATUS "BLAKE3 SIMD configuration: ${CMAKE_C_COMPILER_ARCHITECTURE_ID}")
@@ -223,6 +231,32 @@ elseif(BLAKE3_SIMD_TYPE STREQUAL "none")
 
 else()
   message(FATAL_ERROR "BLAKE3_SIMD_TYPE is set to an unknown value: '${BLAKE3_SIMD_TYPE}'")
+endif()
+
+if(BLAKE3_PREFER_SME AND NOT BLAKE3_USE_SME)
+  message(FATAL_ERROR "BLAKE3_PREFER_SME requires BLAKE3_USE_SME")
+endif()
+if(BLAKE3_USE_SME OR BLAKE3_USE_SVE2)
+  if(NOT BLAKE3_SIMD_TYPE STREQUAL "neon-intrinsics"
+      OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8
+      OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Android)$")
+    message(FATAL_ERROR "SVE2/SME require AArch64 Linux/Android with NEON enabled")
+  endif()
+endif()
+if(BLAKE3_USE_SVE2)
+  target_sources(blake3 PRIVATE blake3_sve2.c blake3_sve2_length.c)
+  target_compile_definitions(blake3 PRIVATE BLAKE3_USE_SVE2=1)
+  set_source_files_properties(blake3_sve2.c blake3_sve2_length.c
+    PROPERTIES COMPILE_FLAGS "${BLAKE3_CFLAGS_SVE2}")
+endif()
+if(BLAKE3_USE_SME)
+  target_sources(blake3 PRIVATE blake3_sme.c blake3_sme2.c)
+  target_compile_definitions(blake3 PRIVATE BLAKE3_USE_SME=1)
+  set_source_files_properties(blake3_sme.c PROPERTIES COMPILE_FLAGS "${BLAKE3_CFLAGS_SME}")
+  set_source_files_properties(blake3_sme2.c PROPERTIES COMPILE_FLAGS "${BLAKE3_CFLAGS_SME2}")
+endif()
+if(BLAKE3_PREFER_SME)
+  target_compile_definitions(blake3 PRIVATE BLAKE3_PREFER_SME=1)
 endif()
 
 if(BLAKE3_USE_TBB)
@@ -372,6 +406,9 @@ install(FILES "${CMAKE_BINARY_DIR}/libblake3.pc"
 add_feature_info("AMD64 assembly" BLAKE3_SIMD_AMD64_ASM "The library uses hand written amd64 SIMD assembly.")
 add_feature_info("x86 SIMD intrinsics" BLAKE3_SIMD_X86_INTRINSICS "The library uses x86 SIMD intrinsics.")
 add_feature_info("NEON SIMD intrinsics" BLAKE3_SIMD_NEON_INTRINSICS "The library uses NEON SIMD intrinsics.")
+add_feature_info("Experimental SME intrinsics" BLAKE3_USE_SME "The library can use 16-way streaming SME with runtime detection.")
+add_feature_info("Experimental SVE2 intrinsics" BLAKE3_USE_SVE2 "The library can use 128-bit SVE2 with per-thread runtime detection.")
+add_feature_info("SME preference" BLAKE3_PREFER_SME "Eligible SME batches take priority over per-core backends.")
 add_feature_info("oneTBB parallelism" BLAKE3_USE_TBB "The library uses oneTBB parallelism.")
 feature_summary(WHAT ENABLED_FEATURES)
 

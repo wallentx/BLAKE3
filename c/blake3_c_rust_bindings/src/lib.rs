@@ -166,6 +166,19 @@ pub mod ffi {
         );
         pub fn blake3_hasher_reset(self_: *mut blake3_hasher);
 
+        pub fn blake3_hash_many(
+            inputs: *const *const u8,
+            num_inputs: usize,
+            blocks: usize,
+            key: *const u32,
+            counter: u64,
+            increment_counter: bool,
+            flags: u8,
+            flags_start: u8,
+            flags_end: u8,
+            out: *mut u8,
+        );
+
         // portable low-level functions
         pub fn blake3_compress_in_place_portable(
             cv: *mut u32,
@@ -308,6 +321,65 @@ pub mod ffi {
                 flags: u8,
                 out: *mut u8,
                 outblocks: usize,
+            );
+        }
+    }
+
+    #[cfg(feature = "sve2")]
+    pub mod sve2 {
+        unsafe extern "C" {
+            #[cfg(test)]
+            pub fn blake3_sve2_eligible(hwcap2: std::ffi::c_ulong, vector_bytes: usize) -> bool;
+            pub fn blake3_sve2_supported() -> bool;
+            // Requires blake3_sve2_supported() on the calling thread.
+            pub fn blake3_hash_many_sve2(
+                inputs: *const *const u8,
+                num_inputs: usize,
+                blocks: usize,
+                key: *const u32,
+                counter: u64,
+                increment_counter: bool,
+                flags: u8,
+                flags_start: u8,
+                flags_end: u8,
+                out: *mut u8,
+            );
+        }
+    }
+
+    #[cfg(feature = "sme")]
+    pub mod sme {
+        unsafe extern "C" {
+            #[cfg(test)]
+            pub fn sme_supported(hwcap2: std::ffi::c_ulong, vector_length: std::ffi::c_int)
+            -> bool;
+            pub fn blake3_sme_supported() -> bool;
+            pub fn blake3_sme2_supported() -> bool;
+            // Call only when blake3_sme_supported() returns true on this thread.
+            pub fn blake3_hash_many_sme(
+                inputs: *const *const u8,
+                num_inputs: usize,
+                blocks: usize,
+                key: *const u32,
+                counter: u64,
+                increment_counter: bool,
+                flags: u8,
+                flags_start: u8,
+                flags_end: u8,
+                out: *mut u8,
+            );
+            // Call only when blake3_sme2_supported() returns true on this thread.
+            pub fn blake3_hash_many_sme2(
+                inputs: *const *const u8,
+                num_inputs: usize,
+                blocks: usize,
+                key: *const u32,
+                counter: u64,
+                increment_counter: bool,
+                flags: u8,
+                flags_start: u8,
+                flags_end: u8,
+                out: *mut u8,
             );
         }
     }

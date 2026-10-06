@@ -93,6 +93,7 @@ fn bench_single_compression_sse41(b: &mut Bencher) {
 }
 
 #[bench]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn bench_single_compression_avx512(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx512_detected() {
         return;
@@ -185,6 +186,7 @@ fn bench_many_chunks_avx2(b: &mut Bencher) {
 }
 
 #[bench]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn bench_many_chunks_avx512(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx512_detected() {
         return;
@@ -277,6 +279,7 @@ fn bench_many_parents_avx2(b: &mut Bencher) {
 }
 
 #[bench]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn bench_many_parents_avx512(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx512_detected() {
         return;
@@ -297,6 +300,78 @@ fn bench_many_parents_neon(b: &mut Bencher) {
         blake3_c_rust_bindings::ffi::neon::blake3_hash_many_neon,
         4,
     );
+}
+
+#[bench]
+#[cfg(feature = "sve2")]
+fn bench_many_chunks_sve2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sve2::blake3_sve2_supported() } {
+        bench_many_chunks_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sve2::blake3_hash_many_sve2,
+            4,
+        );
+    }
+}
+
+#[bench]
+#[cfg(feature = "sve2")]
+fn bench_many_parents_sve2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sve2::blake3_sve2_supported() } {
+        bench_many_parents_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sve2::blake3_hash_many_sve2,
+            4,
+        );
+    }
+}
+
+#[bench]
+#[cfg(feature = "sme")]
+fn bench_many_chunks_sme(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sme::blake3_sme_supported() } {
+        bench_many_chunks_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sme::blake3_hash_many_sme,
+            16,
+        );
+    }
+}
+
+#[bench]
+#[cfg(feature = "sme")]
+fn bench_many_parents_sme(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sme::blake3_sme_supported() } {
+        bench_many_parents_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sme::blake3_hash_many_sme,
+            16,
+        );
+    }
+}
+
+#[bench]
+#[cfg(feature = "sme")]
+fn bench_many_chunks_sme2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sme::blake3_sme2_supported() } {
+        bench_many_chunks_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sme::blake3_hash_many_sme2,
+            16,
+        );
+    }
+}
+
+#[bench]
+#[cfg(feature = "sme")]
+fn bench_many_parents_sme2(b: &mut Bencher) {
+    if unsafe { blake3_c_rust_bindings::ffi::sme::blake3_sme2_supported() } {
+        bench_many_parents_fn(
+            b,
+            blake3_c_rust_bindings::ffi::sme::blake3_hash_many_sme2,
+            16,
+        );
+    }
 }
 
 fn bench_incremental(b: &mut Bencher, len: usize) {

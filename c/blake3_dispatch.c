@@ -4,6 +4,69 @@
 
 #include "blake3_impl.h"
 
+#if BLAKE3_USE_SME || BLAKE3_USE_SVE2
+#include <sys/auxv.h>
+
+// Keep building against older libc headers. These are Linux UAPI values.
+#ifndef HWCAP2_SVE2
+#define HWCAP2_SVE2 (1UL << 1)
+#endif
+#ifndef HWCAP2_SME
+#define HWCAP2_SME (1UL << 23)
+#endif
+#ifndef HWCAP2_SME2
+#define HWCAP2_SME2 (1ULL << 37)
+#endif
+#ifndef PR_SME_VL_LEN_MASK
+#define PR_SME_VL_LEN_MASK 0xffff
+#endif
+#endif
+
+#if BLAKE3_USE_SVE2
+#if !defined(BLAKE3_TESTING)
+static
+#endif
+bool blake3_sve2_eligible(unsigned long hwcap2, size_t vector_bytes) {
+  return (hwcap2 & HWCAP2_SVE2) != 0 && vector_bytes == 16;
+}
+
+bool blake3_sve2_supported(void) {
+  unsigned long hwcap2 = getauxval(AT_HWCAP2);
+  // Check hardware support before executing CNTB. The fixed-width kernel
+  // requires exactly 128 bits; vector length is per-thread and must not be
+  // cached process-wide or inferred from fixed-width svcntb().
+  return (hwcap2 & HWCAP2_SVE2) &&
+         blake3_sve2_eligible(hwcap2, blake3_sve2_vector_length());
+}
+#endif
+
+#if BLAKE3_USE_SME
+
+#if !defined(BLAKE3_TESTING)
+static
+#endif
+bool sme_supported(unsigned long hwcap2, int vector_length) {
+  return (hwcap2 & HWCAP2_SME) != 0 && vector_length >= 0 &&
+         (vector_length & PR_SME_VL_LEN_MASK) >= 64;
+}
+
+static unsigned long get_sme_features(void) {
+  unsigned long hwcap2 = getauxval(AT_HWCAP2);
+  if (!(hwcap2 & HWCAP2_SME)) {
+    return 0;
+  }
+  // Streaming vector length is per-thread and can change after startup.
+  // Do not cache it, or confuse it with the non-streaming SVE vector length.
+  // RDSVL reads the current thread's length without a syscall or mode switch.
+  int vl = (int)blake3_sme_vector_length();
+  return sme_supported(hwcap2, vl) ? hwcap2 : 0;
+}
+
+bool blake3_sme_supported(void) { return (get_sme_features() & HWCAP2_SME) != 0; }
+
+bool blake3_sme2_supported(void) { return (get_sme_features() & HWCAP2_SME2) != 0; }
+#endif
+
 #if defined(_MSC_VER)
 #include <Windows.h>
 #endif
@@ -288,6 +351,30 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
 #endif
 #endif
 
+#if BLAKE3_USE_SME && BLAKE3_PREFER_SME
+  if (num_inputs >= 16) {
+    unsigned long sme_features = get_sme_features();
+    if (sme_features & HWCAP2_SME2) {
+      blake3_hash_many_sme2(inputs, num_inputs, blocks, key, counter,
+                          increment_counter, flags, flags_start, flags_end, out);
+      return;
+    }
+    if (sme_features & HWCAP2_SME) {
+      blake3_hash_many_sme(inputs, num_inputs, blocks, key, counter,
+                         increment_counter, flags, flags_start, flags_end, out);
+      return;
+    }
+  }
+#endif
+
+#if BLAKE3_USE_SVE2
+  if (blake3_sve2_supported()) {
+    blake3_hash_many_sve2(inputs, num_inputs, blocks, key, counter,
+                         increment_counter, flags, flags_start, flags_end, out);
+    return;
+  }
+#endif
+
 #if BLAKE3_USE_NEON == 1
   blake3_hash_many_neon(inputs, num_inputs, blocks, key, counter,
                         increment_counter, flags, flags_start, flags_end, out);
@@ -299,8 +386,14 @@ void blake3_hash_many(const uint8_t *const *inputs, size_t num_inputs,
                             out);
 }
 
-// The dynamically detected SIMD degree of the current platform.
+// The batching degree used to lay out recursive subtree outputs.
 size_t blake3_simd_degree(void) {
+#if BLAKE3_USE_SME || BLAKE3_USE_SVE2
+  // TBB workers can have different streaming vector lengths. Keep their
+  // output layouts identical; hash_many selects a safe backend per thread
+  // and the fallback implementations can process the same 16-input batches.
+  return 16;
+#endif
 #if defined(IS_X86)
   const enum cpu_feature features = get_cpu_features();
   MAYBE_UNUSED(features);
