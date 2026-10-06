@@ -415,6 +415,11 @@ cargo test --features=sme
 cargo +nightly bench --features=sme many_
 ```
 
+CI runs these tests under QEMU with SME disabled and with 128-, 256-, 512-,
+1024-, and 2048-bit streaming vectors. `BLAKE3_TEST_EXPECT_SME=1` requires the
+direct SME test to run, while `0` requires fallback. This checks instruction
+execution and dispatch without relying on the runner's hardware features.
+
 ### Other Platforms
 
 The portable implementation should work on most other architectures. For
